@@ -48,3 +48,24 @@ jobs:
           if result.get('user_id') != 'U0C8MCL5FBR':
               sys.exit('FAIL: Bot identity does not match Design Team Bot.')
           print('PASS: Design Team Bot authentication verified. No messages sent.')
+
+          import urllib.parse
+          for method, params in [
+              ('conversations.history', {'channel': 'C03HP4CBHAQ', 'limit': 1}),
+              ('conversations.replies', {'channel': 'C03HP4CBHAQ', 'ts': '1792056935.250909', 'limit': 10})]:
+              url = 'https://slack.com/api/' + method + '?' + urllib.parse.urlencode(params)
+              request = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + token})
+              try:
+                  with urllib.request.urlopen(request, timeout=20) as response:
+                      result = json.load(response)
+              except Exception:
+                  sys.exit('FAIL: Read request failed. No response body logged.')
+              if result.get('ok') is not True:
+                  allowed = {'missing_scope', 'invalid_auth', 'token_revoked', 'not_in_channel', 'not_allowed_token_type', 'channel_not_found', 'ratelimited'}
+                  error = result.get('error')
+                  sys.exit('FAIL: ' + method + ': ' + (error if error in allowed else 'request rejected'))
+              if method == 'conversations.replies':
+                  if not any(m.get('ts') == '1792056935.481879' and m.get('text') for m in result.get('messages', [])):
+                      sys.exit('FAIL: Expected existing test reply not found.')
+              print('PASS: ' + method + ' read access verified.')
+          print('No Slack writes performed. No message content logged.')
