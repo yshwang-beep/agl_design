@@ -39,7 +39,7 @@ jobs:
               sys.exit('FAIL: Unexpected bot identity.')
           channel = 'C03HP4CBHAQ'
           parent = require(call('chat.postMessage', {'channel': channel,
-              'text': '*[연결 테스트] Design Team Bot*\nGitHub Actions에서 봇 발송과 스레드 댓글 연결을 확인하는 테스트입니다. 실제 주간 업무 보고가 아닙니다.',
+              'text': '*[연결 테스트] Design Team Bot*\n<!subteam^S09FW5GBM7G>\nGitHub Actions에서 봇 발송과 스레드 댓글 연결을 확인하는 테스트입니다. 실제 주간 업무 보고가 아닙니다.',
               'unfurl_links': False, 'unfurl_media': False}))
           print('PASS: Test parent accepted by Slack.')
           reply = require(call('chat.postMessage', {'channel': channel, 'thread_ts': parent['ts'],
