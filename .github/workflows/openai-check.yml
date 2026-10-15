@@ -1,0 +1,47 @@
+name: Check OpenAI connection
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Minimal API request without Slack content
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        shell: python
+        run: |
+          import os, sys, json, re, urllib.request, urllib.error
+          key = os.environ.get('OPENAI_API_KEY', '').strip()
+          if not key:
+              sys.exit('FAIL: OPENAI_API_KEY missing')
+          request = urllib.request.Request('https://api.openai.com/v1/responses',
+              data=json.dumps({'model': 'gpt-4.1', 'input': 'Reply with OK only.', 'max_output_tokens': 16, 'store': False}).encode(),
+              headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
+          try:
+              with urllib.request.urlopen(request, timeout=90) as response:
+                  result = json.load(response)
+              if result.get('status') != 'completed':
+                  sys.exit('FAIL: Response did not complete')
+              print('PASS: OpenAI API accepts requests. No Slack content submitted.')
+          except urllib.error.HTTPError as error:
+              print('OpenAI HTTP status: ' + str(error.code))
+              try:
+                  info = json.load(error).get('error', {})
+                  if isinstance(info, dict):
+                      for field in ('code', 'type'):
+                          value = info.get(field)
+                          if isinstance(value, str) and re.fullmatch(r'[a-z_]{1,64}', value):
+                              print('OpenAI error ' + field + ': ' + value)
+                      message = str(info.get('message', '')).lower()
+                      for label, phrase in [('quota', 'quota'), ('billing', 'billing'), ('credit', 'credit'), ('rate_limit', 'rate limit')]:
+                          if phrase in message:
+                              print('Error category: ' + label)
+                  else:
+                      print('Nonstructured error response; raw content withheld.')
+              except Exception:
+                  print('Non-JSON error response; raw content withheld.')
+              sys.exit(1)
+          except Exception:
+              sys.exit('FAIL: Request failed; raw details withheld.')
