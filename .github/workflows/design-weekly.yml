@@ -1,0 +1,41 @@
+name: Weekly design report
+on:
+  schedule:
+    - cron: '0 0 * * 1'
+    - cron: '0 8 * * 5'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Report format to validate
+        type: choice
+        options: [monday, friday]
+        default: friday
+permissions:
+  contents: read
+concurrency:
+  group: design-weekly
+  cancel-in-progress: false
+jobs:
+  report:
+    if: github.event_name == 'workflow_dispatch' || vars.REPORTS_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Offline validation
+        run: python3 -m unittest test_weekly_report.py
+      - name: Build and verify weekly report
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4.1' }}
+          SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
+          SLACK_BOT_USER_ID: ${{ vars.SLACK_BOT_USER_ID }}
+          SLACK_TEAM_ID: ${{ vars.SLACK_TEAM_ID }}
+          SLACK_GROUP_MENTION: ${{ vars.SLACK_GROUP_MENTION }}
+          SLACK_WORKSPACE_URL: ${{ vars.SLACK_WORKSPACE_URL }}
+          REPORT_MODE: ${{ inputs.mode || 'auto' }}
+          PUBLISH: ${{ github.event_name == 'schedule' && vars.REPORTS_ENABLED == 'true' && 'true' || 'false' }}
+        run: python3 weekly_report.py
