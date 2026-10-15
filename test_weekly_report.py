@@ -1,5 +1,7 @@
 import datetime as dt
 import unittest
+import io
+import urllib.error
 from unittest.mock import patch
 import weekly_report as report
 
@@ -73,6 +75,19 @@ class WeeklyReportTests(unittest.TestCase):
         with patch.object(report, 'thread', side_effect=[[parent], [parent], [parent, reply]]), patch.object(report, 'slack') as send:
             report.publish(parent, '인트로', '상세', self.monday)
         self.assertEqual(send.call_count, 2)
+
+    def test_openai_quota_error_is_distinguished_without_body_logging(self):
+        error = urllib.error.HTTPError('https://api.openai.com/v1/responses', 429, 'quota', {},
+            io.BytesIO(b'{"error":{"code":"insufficient_quota","message":"private account info"}}'))
+        with patch('urllib.request.urlopen', side_effect=error), self.assertRaises(report.Stop) as stopped:
+            report.request_json('https://api.openai.com/v1/responses', 'test', {})
+        self.assertEqual(str(stopped.exception), 'OpenAI HTTP 429: insufficient_quota')
+
+    def test_slack_write_is_not_retried_after_429(self):
+        error = urllib.error.HTTPError('https://slack.com/api/chat.postMessage', 429, 'rate', {'Retry-After': '1'}, None)
+        with patch('urllib.request.urlopen', side_effect=error) as call, self.assertRaises(report.Stop):
+            report.request_json('https://slack.com/api/chat.postMessage', 'test', {})
+        self.assertEqual(call.call_count, 1)
 
 
 if __name__ == '__main__':

@@ -23,7 +23,7 @@ class Stop(RuntimeError):
     pass
 
 
-def request_json(url, token, payload=None):
+def request_json(url, token, payload=None, attempt=0):
     headers = {'Authorization': 'Bearer ' + token}
     body = None
     if payload is not None:
@@ -33,12 +33,37 @@ def request_json(url, token, payload=None):
         with urllib.request.urlopen(urllib.request.Request(url, data=body, headers=headers), timeout=120) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
-        raise Stop('HTTP request rejected: ' + str(error.code)) from None
+        service = 'Slack' if url.startswith('https://slack.com/') else 'OpenAI'
+        if service == 'Slack' and payload is None and error.code == 429 and attempt < 3:
+            try:
+                delay = int(error.headers.get('Retry-After', '30'))
+            except ValueError:
+                delay = 30
+            if 0 <= delay <= 60:
+                print('Slack read rate limited; waiting before retry.')
+                time.sleep(delay + 1)
+                return request_json(url, token, payload, attempt + 1)
+        safe_code = ''
+        if service == 'OpenAI':
+            try:
+                code = json.load(error).get('error', {}).get('code')
+                if code in {'insufficient_quota', 'rate_limit_exceeded', 'invalid_api_key', 'model_not_found', 'billing_hard_limit_reached'}:
+                    safe_code = ': ' + code
+            except Exception:
+                pass
+        raise Stop(service + ' HTTP ' + str(error.code) + safe_code) from None
     except Exception:
         raise Stop('Request outcome uncertain. Check Slack before retrying writes.') from None
 
 
+_last_slack_read = 0.0
+
+
 def slack(method, params=None, write=False):
+    global _last_slack_read
+    if not write:
+        time.sleep(max(0, 1.3 - (time.monotonic() - _last_slack_read)))
+        _last_slack_read = time.monotonic()
     url = 'https://slack.com/api/' + method
     if not write:
         url += '?' + urllib.parse.urlencode(params or {})
@@ -284,7 +309,7 @@ def main():
         found = details(thread(parent['ts'], str(now.timestamp())))
         if len(found) > 1:
             raise Stop('Multiple existing detail replies.')
-        if found:
+        if found and not dry:
             print('Report already complete. No duplicate sent.')
             return
     start = dt.datetime.combine(monday if friday else now.date() - dt.timedelta(days=14), dt.time(), KST)
