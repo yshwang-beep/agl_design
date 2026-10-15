@@ -1,0 +1,65 @@
+name: Test Design Team Bot delivery
+on:
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: design-bot-delivery-test
+  cancel-in-progress: false
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Send one test parent and reply
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        shell: python
+        run: |
+          import json, os, sys, urllib.request
+          token = os.environ.get('SLACK_BOT_TOKEN', '').strip()
+          if not token.startswith('xoxb-'):
+              sys.exit('FAIL: Bot token missing.')
+          def call(method, payload):
+              request = urllib.request.Request('https://slack.com/api/' + method,
+                  data=json.dumps(payload).encode(), method='POST',
+                  headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json; charset=utf-8'})
+              try:
+                  with urllib.request.urlopen(request, timeout=25) as response:
+                      return json.load(response)
+              except Exception:
+                  sys.exit('STOP: Request outcome uncertain; do not rerun before checking Slack.')
+          def require(result):
+              if result.get('ok') is not True:
+                  known = {'missing_scope', 'not_in_channel', 'channel_not_found', 'invalid_auth', 'token_revoked', 'ratelimited'}
+                  error = result.get('error')
+                  sys.exit('FAIL: ' + (error if error in known else 'Slack rejected request'))
+              return result
+          identity = require(call('auth.test', {}))
+          if identity.get('team_id') != 'T03HKGA6BPV' or identity.get('user_id') != 'U0C8MCL5FBR':
+              sys.exit('FAIL: Unexpected bot identity.')
+          channel = 'C03HP4CBHAQ'
+          parent = require(call('chat.postMessage', {'channel': channel,
+              'text': '*[연결 테스트] Design Team Bot*\nGitHub Actions에서 봇 발송과 스레드 댓글 연결을 확인하는 테스트입니다. 실제 주간 업무 보고가 아닙니다.',
+              'unfurl_links': False, 'unfurl_media': False}))
+          print('PASS: Test parent accepted by Slack.')
+          reply = require(call('chat.postMessage', {'channel': channel, 'thread_ts': parent['ts'],
+              'text': '테스트 댓글입니다. 부모 글 1건 + 스레드 댓글 1건의 발송 연결을 점검했습니다. 정기 예약 이전은 아직 완료되지 않았습니다.',
+              'reply_broadcast': False}))
+          if reply.get('message', {}).get('thread_ts') != parent['ts']:
+              sys.exit('FAIL: Reply thread identity not confirmed.')
+          print('PASS: Test reply accepted in the correct thread.')
+          for method, payload in [
+              ('conversations.history', {'channel': channel, 'limit': 1}),
+              ('conversations.replies', {'channel': channel, 'ts': parent['ts'], 'limit': 10})]:
+              result = call(method, payload)
+              if result.get('ok'):
+                  print('PASS: ' + method + ' read access.')
+                  if method == 'conversations.replies':
+                      if not any(m.get('ts') == reply['ts'] and m.get('text') for m in result.get('messages', [])):
+                          sys.exit('FAIL: Test reply not found on readback.')
+                      print('PASS: Nonempty reply verified by readback.')
+              else:
+                  known = {'missing_scope', 'not_allowed_token_type', 'not_in_channel', 'channel_not_found'}
+                  error = result.get('error')
+                  print('BLOCKED: ' + method + ': ' + (error if error in known else 'read access unavailable'))
+          print('No schedules changed. No Slack message content logged.')
