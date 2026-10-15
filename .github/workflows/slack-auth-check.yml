@@ -1,0 +1,50 @@
+name: Verify Design Team Bot
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Verify token identity without posting
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        shell: python
+        run: |
+          import json
+          import os
+          import sys
+          import urllib.request
+
+          token = os.environ.get('SLACK_BOT_TOKEN', '').strip()
+          if not token:
+              sys.exit('FAIL: SLACK_BOT_TOKEN secret is missing or empty.')
+          if not token.startswith('xoxb-'):
+              sys.exit('FAIL: Expected a Bot User OAuth Token.')
+          request = urllib.request.Request(
+              'https://slack.com/api/auth.test',
+              data=b'',
+              headers={'Authorization': 'Bearer ' + token},
+              method='POST',
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  result = json.load(response)
+          except Exception:
+              sys.exit('FAIL: Slack authentication request failed. No response body logged.')
+          if result.get('ok') is not True:
+              allowed_errors = {'invalid_auth', 'token_revoked', 'token_expired',
+                                'account_inactive', 'not_authed', 'ratelimited'}
+              error = result.get('error')
+              sys.exit('FAIL: ' + (error if error in allowed_errors else 'Slack authentication rejected'))
+          if not result.get('bot_id'):
+              sys.exit('FAIL: Token does not identify a bot.')
+          if result.get('team_id') != 'T03HKGA6BPV':
+              sys.exit('FAIL: Workspace identity does not match.')
+          if result.get('user_id') != 'U0C8MCL5FBR':
+              sys.exit('FAIL: Bot identity does not match Design Team Bot.')
+          print('PASS: Design Team Bot authentication verified. No messages sent.')
