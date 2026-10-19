@@ -46,11 +46,15 @@ def request_json(url, token, payload=None, attempt=0):
         safe_code = ''
         if service == 'OpenAI':
             try:
-                code = json.load(error).get('error', {}).get('code')
-                if code in {'insufficient_quota', 'rate_limit_exceeded', 'invalid_api_key', 'model_not_found', 'billing_hard_limit_reached'}:
-                    safe_code = ': ' + code
+                info = json.load(error).get('error', {})
+                if isinstance(info, dict):
+                    code = info.get('code') or info.get('type')
+                    if isinstance(code, str) and re.fullmatch(r'[a-z_]{1,64}', code):
+                        safe_code = ': ' + code
+                else:
+                    safe_code = ': unstructured_error'
             except Exception:
-                pass
+                safe_code = ': unreadable_error_body'
         raise Stop(service + ' HTTP ' + str(error.code) + safe_code) from None
     except Exception:
         raise Stop('Request outcome uncertain. Check Slack before retrying writes.') from None
@@ -163,7 +167,11 @@ coordination=마감/작업자/요청사항 협의 필요, done=전주 완료일�
 전주(월~일)에 완료된 업무만 done. 상시 관리는 done 아님. 착수 미확인도 확인 필요.
 2026-09-28 황영선이 가격장표 가이드 마감 완료 확인. 명시적 신규 후속 없으면 미완료 재등록 금지.
 완료일은 불명확하므로 전주 완료로 임의 배정 금지.
-요청자/작업자/완료 판단에 쓴 원문 메시지 ts와 원문 그대로의 인용을 facts에 담는다.
+요청자/작업자/완료 판단에 쓴 원문 메시지 ts와 원문 그대로의 짧은 인용을 facts에 담는다.
+facts.kind는 requester/worker/completion 중 하나다. quote는 해당 ts의 text에 실제로 있는 연속 문자열만 복사한다.
+Slack의 <@ID>를 인용에서 이름으로 변환하거나 문장을 다듬지 말라. 원문 띄어쓰기/줄바꿈/기호를 보존한다.
+ts는 입력 문자열 그대로 복사한다. 근거 없는 역할은 확인 필요로 표시하고 잘못된 fact를 만들지 말라.
+repair 항목이 있으면 이전 초안에서 실패한 원문 대조를 수정하고 전체를 다시 반환하라.
 section이 done이면 완료 근거 fact와 완료 날짜 completed_date(YYYY-MM-DD)가 반드시 있어야 한다.
 인용에 없는 담당자 이름을 만들지 않는다. 링크는 출력하지 말고 해당 부모 thread_ts를 반환.
 각 행은 짧게 작성하고 상태·확인 사항에 진행 상태와 남은 확인을 모두 명시한다.
@@ -173,6 +181,7 @@ section이 done이면 완료 근거 fact와 완료 날짜 completed_date(YYYY-MM
 def schema():
     fact = {'type': 'object', 'properties': {k: {'type': 'string'} for k in ('kind', 'ts', 'quote')},
             'required': ['kind', 'ts', 'quote'], 'additionalProperties': False}
+    fact['properties']['kind']['enum'] = ['requester', 'worker', 'completion']
     fields = {k: {'type': 'string'} for k in ('task', 'requester', 'worker', 'deadline', 'status', 'thread_ts', 'completed_date')}
     fields['section'] = {'type': 'string', 'enum': ['main', 'planned', 'coordination', 'done']}
     fields['facts'] = {'type': 'array', 'items': fact}
@@ -198,7 +207,7 @@ def summarize(sources, context):
 
 def validate(items, sources, monday, friday):
     seen = set()
-    for item in items:
+    for index, item in enumerate(items):
         root = item['thread_ts']
         if root not in sources or not item['task'].strip():
             raise Stop('Invalid source reference.')
@@ -209,7 +218,7 @@ def validate(items, sources, monday, friday):
         kinds = set()
         for fact in item['facts']:
             if not fact['quote'] or fact['quote'] not in messages.get(fact['ts'], ''):
-                raise Stop('An evidence quotation could not be verified.')
+                raise Stop('Evidence mismatch in row ' + str(index + 1) + ', kind ' + fact['kind'] + '.')
             kinds.add(fact['kind'])
         for field in ('requester', 'worker'):
             if item[field] != '확인 필요' and field not in kinds:
@@ -317,9 +326,17 @@ def main():
     sources = collect(history, start.timestamp(), str(cutoff.timestamp()))
     context = {'mode': 'friday' if friday else 'monday', 'week_monday': monday.isoformat(),
                'cutoff_kst': cutoff.isoformat(), 'previous_week_start': (monday - dt.timedelta(days=7)).isoformat()}
-    items = summarize(sources, context)
-    validate(items, sources, monday, friday)
-    detail = render(items, monday, friday)
+    for attempt in range(2):
+        items = summarize(sources, context)
+        try:
+            validate(items, sources, monday, friday)
+            detail = render(items, monday, friday)
+            break
+        except Stop as error:
+            if attempt:
+                raise
+            context['repair'] = {'failure': str(error), 'previous_items': items}
+            print('Draft validation requested one correction pass. No content logged.')
     weekday = '금' if friday else '월'
     intro = (TITLE + '\n' + GROUP + '\n\n*기준일:* ' + day.strftime('%Y.%m.%d') + '(' + weekday + ') KST\n'
         + '*대상:* `#06_design_lab` ' + start.strftime('%Y.%m.%d') + '~' + cutoff.strftime('%Y.%m.%d')
@@ -334,7 +351,17 @@ def main():
 
 if __name__ == '__main__':
     try:
-        main()
+        if os.environ.get('API_PREFLIGHT') == 'true':
+            if not os.environ.get('OPENAI_API_KEY'):
+                raise Stop('Required GitHub Secret missing: OPENAI_API_KEY')
+            result = request_json('https://api.openai.com/v1/responses', os.environ['OPENAI_API_KEY'], {
+                'model': os.environ.get('OPENAI_MODEL', 'gpt-4.1'), 'store': False,
+                'input': 'Reply with OK only.', 'max_output_tokens': 16})
+            if result.get('status') != 'completed':
+                raise Stop('OpenAI preflight did not complete.')
+            print('PASS: OpenAI minimal preflight. No Slack data submitted.')
+        else:
+            main()
     except Stop as error:
         print('STOP: ' + str(error), file=sys.stderr)
         sys.exit(1)
