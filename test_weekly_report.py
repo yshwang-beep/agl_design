@@ -47,6 +47,23 @@ class WeeklyReportTests(unittest.TestCase):
         with self.assertRaises(report.Stop):
             report.render([self.item], self.monday, False)
 
+    def test_stage_delivery_is_not_treated_as_overall_completion(self):
+        self.sources['100.000001'][0]['text'] = '시안 전달드립니다. 검토 부탁드립니다.'
+        self.item['facts'] = [dict(kind='completion', source_id='E1')]
+        report.validate([self.item], self.sources, self.monday, False)
+        self.item.update(section='done', completed_date='2026-10-09')
+        with self.assertRaises(report.Stop):
+            report.validate([self.item], self.sources, self.monday, False)
+
+    def test_native_slack_table_places_link_in_last_cell(self):
+        self.item['worker'] = '<@UWORKER>'
+        blocks = report.table_blocks([self.item], self.monday, False)
+        self.assertEqual(blocks[0]['type'], 'table')
+        row = blocks[0]['rows'][2]
+        self.assertEqual(row[1]['elements'][0]['elements'][-1], {'type': 'user', 'user_id': 'UWORKER'})
+        self.assertEqual(row[3]['elements'][0]['elements'][-1]['text'], '스레드')
+        self.assertEqual(len(row), 4)
+
     def test_old_thread_recent_reply_is_collected(self):
         history = [{'ts': '100.000001', 'text': '오래된 요청', 'reply_count': 1, 'latest_reply': '900.000001'}]
         with patch.object(report, 'thread', return_value=[{'ts': '100.000001', 'text': '원문'}, {'ts': '900.000001', 'text': '신규 댓글'}]) as fetch:

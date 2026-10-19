@@ -232,7 +232,7 @@ def validate(items, sources, monday, friday):
                 actors.add(message.get('user', ''))
                 if role != '확인 필요' and not any(role == '<@' + actor + '>' for actor in actors if actor):
                     raise Stop('Role actor is not present in the cited source.')
-            if fact['kind'] == 'completion' and not re.search(r'완료|종료|마감', message['text']):
+            if item['section'] == 'done' and fact['kind'] == 'completion' and not re.search(r'완료|종료|마감', message['text']):
                 raise Stop('Completion source does not contain explicit completion wording.')
             kinds.add(fact['kind'])
         for field in ('requester', 'worker'):
@@ -255,16 +255,20 @@ def cell(value):
     return value.replace('|', '／').replace('\n', ' ').strip() or '확인 필요'
 
 
-def render(items, monday, friday):
+def headings(monday, friday):
     end = monday + dt.timedelta(days=4 if friday else 6)
-    headings = [('main', '① 이번 주 주요 업무 ㅣ ' + monday.strftime('%m/%d') + '~' + end.strftime('%m/%d')),
+    sections = [('main', '① 이번 주 주요 업무 ㅣ ' + monday.strftime('%m/%d') + '~' + end.strftime('%m/%d')),
                 ('planned', '② 진행 예정 업무'), ('coordination', '③ 일정 조율 업무')]
     if not friday:
-        headings.append(('done', '④ 전주 완료 업무 ㅣ ' + (monday - dt.timedelta(days=7)).strftime('%m/%d') + '~' + (monday - dt.timedelta(days=1)).strftime('%m/%d')))
+        sections.append(('done', '④ 전주 완료 업무 ㅣ ' + (monday - dt.timedelta(days=7)).strftime('%m/%d') + '~' + (monday - dt.timedelta(days=1)).strftime('%m/%d')))
+    return sections
+
+
+def render(items, monday, friday):
     if not items:
         return '이번 주 보고 대상 업무 없음'
     parts = []
-    for section, heading in headings:
+    for section, heading in headings(monday, friday):
         rows = [i for i in items if i['section'] == section]
         part = '*' + heading + '*\n'
         if rows:
@@ -282,7 +286,40 @@ def render(items, monday, friday):
     return draft
 
 
-def publish(parent, intro, detail, day):
+def table_blocks(items, monday, friday):
+    if not items:
+        return None
+    def rich(value, bold=False, link=None):
+        elements = []
+        for part in re.split(r'(<@U[A-Z0-9]+>)', value):
+            if not part:
+                continue
+            if re.fullmatch(r'<@U[A-Z0-9]+>', part):
+                elements.append({'type': 'user', 'user_id': part[2:-1]})
+            else:
+                element = {'type': 'text', 'text': part}
+                if bold:
+                    element['style'] = {'bold': True}
+                elements.append(element)
+        if link:
+            elements.extend([{'type': 'text', 'text': ' '}, {'type': 'link', 'url': link, 'text': '스레드'}])
+        return {'type': 'rich_text', 'elements': [{'type': 'rich_text_section', 'elements': elements or [{'type': 'text', 'text': ' '}]}]}
+    rows = [[rich(c, bold=True) for c in ('업무', '요청자 → 작업자', '마감·일정', '상태·확인 사항')]]
+    for section, heading in headings(monday, friday):
+        rows.append([rich(heading, bold=True), rich(' '), rich(' '), rich(' ')])
+        selected = [item for item in items if item['section'] == section]
+        if not selected:
+            rows.append([rich('해당 없음'), rich(' '), rich(' '), rich(' ')])
+        for item in selected:
+            link = WORKSPACE + '/archives/' + CHANNEL + '/p' + item['thread_ts'].replace('.', '')
+            rows.append([rich(cell(item['task'])), rich(cell(item['requester']) + ' → ' + cell(item['worker'])),
+                         rich(cell(item['deadline'])), rich(cell(item['status']), link=link)])
+    if len(rows) > 100:
+        raise Stop('Native Slack table exceeds row limit.')
+    return [{'type': 'table', 'column_settings': [{'is_wrapped': True}] * 4, 'rows': rows}]
+
+
+def publish(parent, intro, detail, day, blocks=None):
     if parent is None:
         parent = slack('chat.postMessage', {'channel': CHANNEL, 'text': intro, 'unfurl_links': False,
             'unfurl_media': False, 'metadata': {'event_type': 'design_weekly_v1', 'event_payload': {'report_key': day.isoformat()}}}, write=True)
@@ -292,6 +329,8 @@ def publish(parent, intro, detail, day):
         return
     payload = {'channel': CHANNEL, 'thread_ts': ts, 'text': detail, 'reply_broadcast': False,
                'unfurl_links': False, 'unfurl_media': False}
+    if blocks:
+        payload['blocks'] = blocks
     slack('chat.postMessage', payload, write=True)
     for attempt in range(2):
         replies = details(thread(ts, str(time.time())))
@@ -346,6 +385,7 @@ def main():
         try:
             validate(items, sources, monday, friday)
             detail = render(items, monday, friday)
+            blocks = table_blocks(items, monday, friday)
             break
         except Stop as error:
             if attempt:
@@ -361,7 +401,7 @@ def main():
         print('PASS: Sources collected and draft validated. Slack posting disabled.')
         print('Task count: ' + str(len(items)))
         return
-    publish(parent, intro, detail, day)
+    publish(parent, intro, detail, day, blocks)
 
 
 if __name__ == '__main__':
