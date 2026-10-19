@@ -13,23 +13,24 @@ class WeeklyReportTests(unittest.TestCase):
         config.start()
         self.addCleanup(config.stop)
         self.monday = dt.date(2026, 10, 12)
-        self.sources = {'100.000001': [{'ts': '100.000001', 'text': '제작 요청합니다. 지은 요청, 송아 작업. 완료 10/9'}]}
+        self.sources = {'100.000001': [{'ts': '100.000001', 'evidence_id': 'E1', 'user': 'U_REQUESTER',
+                        'text': '제작 요청합니다. <@UWORKER> 작업. 완료 10/9'}]}
         self.item = dict(task='이미지', requester='확인 필요', worker='확인 필요', deadline='확인 필요',
                          status='확인 필요', thread_ts='100.000001', completed_date='', section='main', facts=[])
 
     def test_roles_require_verified_quotes(self):
-        self.item['worker'] = '송아'
+        self.item['worker'] = '<@UWORKER>'
         with self.assertRaises(report.Stop):
             report.validate([self.item], self.sources, self.monday, False)
-        self.item['facts'] = [dict(kind='worker', ts='100.000001', quote='송아 작업')]
+        self.item['facts'] = [dict(kind='worker', source_id='E1')]
         report.validate([self.item], self.sources, self.monday, False)
-        self.item['facts'][0]['quote'] = '만들어진 인용'
+        self.item['facts'][0]['source_id'] = 'E_MISSING'
         with self.assertRaises(report.Stop):
             report.validate([self.item], self.sources, self.monday, False)
 
     def test_completed_friday_rejected_and_previous_week_checked(self):
         self.item.update(section='done', completed_date='2026-10-09',
-                         facts=[dict(kind='completion', ts='100.000001', quote='완료 10/9')])
+                         facts=[dict(kind='completion', source_id='E1')])
         report.validate([self.item], self.sources, self.monday, False)
         with self.assertRaises(report.Stop):
             report.validate([self.item], self.sources, self.monday, True)

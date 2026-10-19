@@ -150,6 +150,8 @@ def collect(history, start, cutoff):
     missing = carry - set(selected) - {m['ts'] for m in history}
     if missing:
         raise Stop('A carried source is no longer accessible; review required.')
+    for index, message in enumerate((m for rows in selected.values() for m in rows), 1):
+        message['evidence_id'] = 'E' + str(index)
     evidence = json.dumps(selected, ensure_ascii=False)
     if len(evidence) > 240000:
         raise Stop('Source content exceeds the input budget; no silent truncation.')
@@ -167,10 +169,10 @@ coordination=마감/작업자/요청사항 협의 필요, done=전주 완료일�
 전주(월~일)에 완료된 업무만 done. 상시 관리는 done 아님. 착수 미확인도 확인 필요.
 2026-09-28 황영선이 가격장표 가이드 마감 완료 확인. 명시적 신규 후속 없으면 미완료 재등록 금지.
 완료일은 불명확하므로 전주 완료로 임의 배정 금지.
-요청자/작업자/완료 판단에 쓴 원문 메시지 ts와 원문 그대로의 짧은 인용을 facts에 담는다.
-facts.kind는 requester/worker/completion 중 하나다. quote는 해당 ts의 text에 실제로 있는 연속 문자열만 복사한다.
-Slack의 <@ID>를 인용에서 이름으로 변환하거나 문장을 다듬지 말라. 원문 띄어쓰기/줄바꿈/기호를 보존한다.
-ts는 입력 문자열 그대로 복사한다. 근거 없는 역할은 확인 필요로 표시하고 잘못된 fact를 만들지 말라.
+요청자/작업자/완료 판단에 쓴 원문 메시지의 evidence_id를 facts.source_id로 반환한다.
+facts.kind는 requester/worker/completion 중 하나다. source_id는 해당 thread 안의 실제 메시지 번호여야 한다.
+요청자·작업자는 원문의 Slack 사용자 멘션 <@ID> 또는 확인 필요만 반환한다. 없는 이름을 만들지 말라.
+역할별 사실을 뒷받침하는 source_id를 선택하라. 근거 없는 역할은 확인 필요로 표시한다.
 repair 항목이 있으면 이전 초안에서 실패한 원문 대조를 수정하고 전체를 다시 반환하라.
 section이 done이면 완료 근거 fact와 완료 날짜 completed_date(YYYY-MM-DD)가 반드시 있어야 한다.
 인용에 없는 담당자 이름을 만들지 않는다. 링크는 출력하지 말고 해당 부모 thread_ts를 반환.
@@ -178,11 +180,14 @@ section이 done이면 완료 근거 fact와 완료 날짜 completed_date(YYYY-MM
 자료가 없으면 items=[]; 정상 업무를 임의 누락하지 말라. 전체 보고는 5000자 이내여야 한다.'''
 
 
-def schema():
-    fact = {'type': 'object', 'properties': {k: {'type': 'string'} for k in ('kind', 'ts', 'quote')},
-            'required': ['kind', 'ts', 'quote'], 'additionalProperties': False}
+def schema(sources):
+    evidence_ids = sorted({m['evidence_id'] for rows in sources.values() for m in rows})
+    fact = {'type': 'object', 'properties': {k: {'type': 'string'} for k in ('kind', 'source_id')},
+            'required': ['kind', 'source_id'], 'additionalProperties': False}
     fact['properties']['kind']['enum'] = ['requester', 'worker', 'completion']
+    fact['properties']['source_id']['enum'] = evidence_ids or ['NONE']
     fields = {k: {'type': 'string'} for k in ('task', 'requester', 'worker', 'deadline', 'status', 'thread_ts', 'completed_date')}
+    fields['thread_ts']['enum'] = list(sources) or ['NONE']
     fields['section'] = {'type': 'string', 'enum': ['main', 'planned', 'coordination', 'done']}
     fields['facts'] = {'type': 'array', 'items': fact}
     item = {'type': 'object', 'properties': fields, 'required': list(fields), 'additionalProperties': False}
@@ -195,7 +200,7 @@ def summarize(sources, context):
         'model': os.environ.get('OPENAI_MODEL', 'gpt-4.1'), 'store': False,
         'instructions': RULES, 'input': json.dumps({'context': context, 'sources': sources}, ensure_ascii=False),
         'max_output_tokens': 10000,
-        'text': {'format': {'type': 'json_schema', 'name': 'design_weekly', 'strict': True, 'schema': schema()}}})
+        'text': {'format': {'type': 'json_schema', 'name': 'design_weekly', 'strict': True, 'schema': schema(sources)}}})
     if result.get('status') != 'completed':
         raise Stop('AI response did not complete.')
     outputs = [c.get('text', '') for o in result.get('output', []) for c in o.get('content', []) if c.get('type') == 'output_text']
@@ -214,11 +219,21 @@ def validate(items, sources, monday, friday):
         if item['task'] in seen:
             raise Stop('Duplicate task in draft.')
         seen.add(item['task'])
-        messages = {m['ts']: m.get('text', '') for m in sources[root]}
+        messages = {m.get('evidence_id'): m for m in sources[root]}
         kinds = set()
         for fact in item['facts']:
-            if not fact['quote'] or fact['quote'] not in messages.get(fact['ts'], ''):
+            message = messages.get(fact['source_id'])
+            if not message or not message.get('text'):
                 raise Stop('Evidence mismatch in row ' + str(index + 1) + ', kind ' + fact['kind'] + '.')
+            # The evidence text comes from Slack, never from generated quotations.
+            if fact['kind'] in {'requester', 'worker'}:
+                role = item[fact['kind']]
+                actors = set(re.findall(r'<@(U[A-Z0-9]+)>', message['text']))
+                actors.add(message.get('user', ''))
+                if role != '확인 필요' and not any(role == '<@' + actor + '>' for actor in actors if actor):
+                    raise Stop('Role actor is not present in the cited source.')
+            if fact['kind'] == 'completion' and not re.search(r'완료|종료|마감', message['text']):
+                raise Stop('Completion source does not contain explicit completion wording.')
             kinds.add(fact['kind'])
         for field in ('requester', 'worker'):
             if item[field] != '확인 필요' and field not in kinds:
