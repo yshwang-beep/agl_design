@@ -17,7 +17,11 @@ concurrency:
   cancel-in-progress: false
 jobs:
   report:
-    if: github.event_name == 'workflow_dispatch' || vars.REPORTS_ENABLED == 'true'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'schedule' &&
+      ((github.event.schedule == '0 0 * * 1' && vars.MONDAY_REPORTS_ENABLED == 'true') ||
+      (github.event.schedule == '0 8 * * 5' && vars.FRIDAY_REPORTS_ENABLED == 'true')))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -39,5 +43,8 @@ jobs:
           SLACK_GROUP_MENTION: ${{ vars.SLACK_GROUP_MENTION }}
           SLACK_WORKSPACE_URL: ${{ vars.SLACK_WORKSPACE_URL }}
           REPORT_MODE: ${{ inputs.mode || 'auto' }}
-          PUBLISH: ${{ github.event_name == 'schedule' && vars.REPORTS_ENABLED == 'true' && 'true' || 'false' }}
+          PUBLISH: >-
+            ${{ github.event_name == 'schedule' &&
+            ((github.event.schedule == '0 0 * * 1' && vars.MONDAY_REPORTS_ENABLED == 'true') ||
+            (github.event.schedule == '0 8 * * 5' && vars.FRIDAY_REPORTS_ENABLED == 'true')) && 'true' || 'false' }}
         run: python3 weekly_report.py
