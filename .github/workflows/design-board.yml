@@ -1,0 +1,41 @@
+name: Monday design workboard
+on:
+  schedule:
+    - cron: '30 22 * * 0'
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: Read-only connection check or source validation
+        type: choice
+        options: [preflight, validate]
+        default: preflight
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: design-workboard-monday
+  cancel-in-progress: false
+jobs:
+  board:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && vars.BOARD_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Offline safety checks
+        run: python3 -m unittest test_board_weekly.py test_weekly_report.py
+      - name: Collect, validate, and update the Monday board
+        env:
+          BOARD_PHASE: ${{ github.event_name == 'schedule' && 'validate' || inputs.phase || 'preflight' }}
+          BOARD_ENABLED: ${{ vars.BOARD_ENABLED }}
+          PUBLISH: ${{ github.event_name == 'schedule' && vars.BOARD_ENABLED == 'true' && 'true' || 'false' }}
+          WORKBOARD_URL: ${{ vars.WORKBOARD_URL }}
+          BOARD_CONFIG: ${{ secrets.BOARD_CONFIG }}
+          SLACK_USER_TOKEN: ${{ secrets.SLACK_USER_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4.1' }}
+          REPORT_POLICY: ${{ secrets.REPORT_POLICY }}
+        run: python3 board_weekly.py
