@@ -8,8 +8,9 @@ The runner fetches fresh source material in memory and uses OpenAI Responses wit
 ## Setup status
 
 Slack bot authentication, posting and channel/thread reading have been verified.
-The weekly workflow is installed but scheduled posting stays disabled until
-`REPORTS_ENABLED=true` is explicitly configured after migration verification.
+The weekly workflow has separate Monday and Friday publication switches, both off
+by default. Each schedule stays disabled until its own switch is explicitly set
+to `true` after verification of that report.
 Manual workflow runs are always draft validation only; they do not post.
 
 Required repository Secrets:
@@ -23,8 +24,12 @@ Required repository Secrets:
 Optional repository Variables:
 
 - `OPENAI_MODEL`: defaults to `gpt-4.1`.
-- `REPORTS_ENABLED`: defaults off. Set `true` only after successful manual Monday
-  and Friday draft runs and disabling the corresponding old cloud schedules.
+- `FRIDAY_REPORTS_ENABLED`: defaults off. Set `true` only after a successful manual
+  Friday draft run and disabling the corresponding old Friday cloud schedule.
+- `MONDAY_REPORTS_ENABLED`: defaults off. Set `true` only after a successful manual
+  Monday draft run and disabling the corresponding old Monday cloud schedule.
+  Enabling Friday does not enable Monday. The former `REPORTS_ENABLED` variable
+  is no longer used.
 - `SLACK_CHANNEL_NAME`: optional display name; without it Slack's channel mention
   renders the configured channel. Do not hardcode workspace names in source.
 
