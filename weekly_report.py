@@ -15,6 +15,8 @@ BOT = os.environ.get('SLACK_BOT_USER_ID', '')
 TEAM = os.environ.get('SLACK_TEAM_ID', '')
 GROUP = os.environ.get('SLACK_GROUP_MENTION', '')
 WORKSPACE = os.environ.get('SLACK_WORKSPACE_URL', '').rstrip('/')
+CHANNEL_NAME = os.environ.get('SLACK_CHANNEL_NAME', '').lstrip('#')
+REPORT_POLICY = os.environ.get('REPORT_POLICY', '').strip()
 KST = ZoneInfo('Asia/Seoul')
 TITLE = '📌 *이번 주 디자인 업무 현황*'
 
@@ -128,7 +130,9 @@ def collect(history, start, cutoff):
     selected, carry = {}, set()
     # Scan all root metadata to catch new replies on arbitrarily old roots.
     reports = [m for m in history if '이번 주 디자인 업무 현황' in m.get('text', '')]
-    for report in sorted(reports, key=lambda m: float(m['ts']), reverse=True)[:4]:
+    # Every accessible prior report can contain an unresolved carry-over source.
+    # A fixed report count silently loses work absent from recent summaries.
+    for report in sorted(reports, key=lambda m: float(m['ts']), reverse=True):
         replies = thread(report['ts'], cutoff)
         for message in replies:
             for stamp in source_links(message.get('text', '')):
@@ -147,7 +151,7 @@ def collect(history, start, cutoff):
         if recent or updated or root['ts'] in carry:
             rows = thread(root['ts'], cutoff) if root.get('reply_count') else [root]
             selected[root['ts']] = [compact(m) for m in rows]
-    missing = carry - set(selected) - {m['ts'] for m in history}
+    missing = carry - set(selected)
     if missing:
         raise Stop('A carried source is no longer accessible; review required.')
     for index, message in enumerate((m for rows in selected.values() for m in rows), 1):
@@ -164,11 +168,12 @@ RULES = '''Slack 원문을 근거로 한국어 디자인 업무 보고를 작성
 요청자, 작업자, 마감, 착수, 상태가 불명확하면 확인 필요. 사용자는 <@ID>로 표시 가능.
 단계별 전달/수정 완료를 전체 승인/게시 완료로 확대하지 않는다. 검토/승인이 남으면 열린 업무.
 동일 업무는 한 번만. main=이번 주 마감/현재 핵심 진행, planned=착수 전 일정/다음 행동 확정,
-coordination=마감/작업자/요청사항 협의 필요, done=전주 완료일이 명시된 전체 완료 업무.
-금요일에는 이번 주 월~금에 관련된 열린 업무만, 완료 업무 제외. 월요일에는 최근14일과 이전 미완료 후속,
-전주(월~일)에 완료된 업무만 done. 상시 관리는 done 아님. 착수 미확인도 확인 필요.
-2026-09-28 황영선이 가격장표 가이드 마감 완료 확인. 명시적 신규 후속 없으면 미완료 재등록 금지.
-완료일은 불명확하므로 전주 완료로 임의 배정 금지.
+coordination=마감/작업자/요청사항 협의 필요, done=대상 기간에 완료일이 명시된 전체 완료 업무.
+금요일에는 이번 주 월요일부터 조회 마감까지 관련 열린 업무와 이번 주 완료 업무를 보고한다.
+월요일에는 최근14일과 이전 미완료 후속, 전주(월~일)에 완료된 업무만 done.
+context의 completion_start~completion_end 안에 명시적으로 완료된 전체 업무만 done에 넣는다.
+완료 날짜를 메시지 게시일이나 마감일로 추정하지 않는다. 기간이 불명확하면 완료 구역에 넣지 않는다.
+상시 관리는 done 아님. 착수 미확인도 확인 필요.
 요청자/작업자/완료 판단에 쓴 원문 메시지의 evidence_id를 facts.source_id로 반환한다.
 facts.kind는 requester/worker/completion 중 하나다. source_id는 해당 thread 안의 실제 메시지 번호여야 한다.
 요청자·작업자는 원문의 Slack 사용자 멘션 <@ID> 또는 확인 필요만 반환한다. 없는 이름을 만들지 말라.
@@ -188,6 +193,12 @@ def schema(sources):
     fact['properties']['source_id']['enum'] = evidence_ids or ['NONE']
     fields = {k: {'type': 'string'} for k in ('task', 'requester', 'worker', 'deadline', 'status', 'thread_ts', 'completed_date')}
     fields['thread_ts']['enum'] = list(sources) or ['NONE']
+    actors = {m.get('user', '') for rows in sources.values() for m in rows}
+    actors.update(actor for rows in sources.values() for m in rows
+                  for actor in re.findall(r'<@(U[A-Z0-9]+)(?:\|[^>]+)?>', m.get('text', '')))
+    role_options = ['확인 필요'] + ['<@' + actor + '>' for actor in sorted(actors) if re.fullmatch(r'U[A-Z0-9]+', actor)]
+    fields['requester']['enum'] = role_options
+    fields['worker']['enum'] = role_options
     fields['section'] = {'type': 'string', 'enum': ['main', 'planned', 'coordination', 'done']}
     fields['facts'] = {'type': 'array', 'items': fact}
     item = {'type': 'object', 'properties': fields, 'required': list(fields), 'additionalProperties': False}
@@ -198,7 +209,8 @@ def schema(sources):
 def summarize(sources, context):
     result = request_json('https://api.openai.com/v1/responses', os.environ['OPENAI_API_KEY'], {
         'model': os.environ.get('OPENAI_MODEL', 'gpt-4.1'), 'store': False,
-        'instructions': RULES, 'input': json.dumps({'context': context, 'sources': sources}, ensure_ascii=False),
+        'instructions': RULES + ('\n추가 확정 정책:\n' + REPORT_POLICY if REPORT_POLICY else ''),
+        'input': json.dumps({'context': context, 'sources': sources}, ensure_ascii=False),
         'max_output_tokens': 10000,
         'text': {'format': {'type': 'json_schema', 'name': 'design_weekly', 'strict': True, 'schema': schema(sources)}}})
     if result.get('status') != 'completed':
@@ -208,6 +220,51 @@ def summarize(sources, context):
         return json.loads(''.join(outputs))['items']
     except Exception:
         raise Stop('AI output format invalid.') from None
+
+
+def completion_window(monday, friday):
+    return (monday, monday + dt.timedelta(days=4)) if friday else (
+        monday - dt.timedelta(days=7), monday - dt.timedelta(days=1))
+
+
+def explicit_completion(text):
+    """Reject deadlines, negative statements and unfinished approval stages."""
+    if re.search(r'(?:검토|승인|확인)\s*(?:대기|중|필요|예정|부탁|요청)', text):
+        return False
+    if re.search(r'미\s*(?:완료|종료)|(?:완료|종료)\s*(?:예정|예상|계획|전|여부|되지|하지|아님|아니)', text):
+        return False
+    for match in re.finditer(r'완료|종료|마감', text):
+        before, after = text[max(0, match.start() - 12):match.start()], text[match.end():match.end() + 35]
+        if re.search(r'(?:미|아직|아직은)\s*$', before):
+            continue
+        if re.search(r'^(?:\s|[는가을를은이])*?(?:예정|예상|목표|계획|필요|대기|전|여부|요청|부탁|되면|되기|될|해야|해주|해주세요|아니|아님|하지|안\s*(?:되|됐|했|한|할)|못|되지|인가|할\s)', after):
+            continue
+        if re.search(r'\?|나요|습니까', after):
+            continue
+        if match.group() == '마감' and not re.match(r'\s*(?:완료|했습니다|하였습니다|되었습니다|됐습니다|했다|했음|됨|되었음)', after):
+            continue
+        return True
+    return False
+
+
+def explicit_completion_date(message, completed):
+    """Require an actual date expression; posting/deadline dates are not inferred."""
+    text = message['text']
+    year, month, day = completed.year, completed.month, completed.day
+    numeric = (rf'(?<!\d)(?:{year}|{year % 100:02d})[./-]\s*0?{month}[./-]\s*0?{day}(?!\d)',
+               rf'(?<![\d./-])0?{month}[./-]\s*0?{day}(?!\d)',
+               rf'(?<!\d)(?:{year}\s*년\s*)?0?{month}\s*월\s*0?{day}\s*일')
+    if any(re.search(pattern, text) for pattern in numeric):
+        return True
+    # Relative dates are explicit only when anchored to the original Slack time.
+    try:
+        posted = dt.datetime.fromtimestamp(float(message['ts']), KST).date()
+    except (KeyError, ValueError, OverflowError, OSError):
+        return False
+    for expression, offset in ((r'오늘|금일', 0), (r'어제|전일', 1), (r'그제|그저께', 2)):
+        if re.search(expression, text) and completed == posted - dt.timedelta(days=offset):
+            return True
+    return False
 
 
 def validate(items, sources, monday, friday):
@@ -228,25 +285,56 @@ def validate(items, sources, monday, friday):
             # The evidence text comes from Slack, never from generated quotations.
             if fact['kind'] in {'requester', 'worker'}:
                 role = item[fact['kind']]
-                actors = set(re.findall(r'<@(U[A-Z0-9]+)>', message['text']))
+                actors = set(re.findall(r'<@(U[A-Z0-9]+)(?:\|[^>]+)?>', message['text']))
                 actors.add(message.get('user', ''))
                 if role != '확인 필요' and not any(role == '<@' + actor + '>' for actor in actors if actor):
                     raise Stop('Role actor is not present in the cited source.')
-            if item['section'] == 'done' and fact['kind'] == 'completion' and not re.search(r'완료|종료|마감', message['text']):
+            if item['section'] == 'done' and fact['kind'] == 'completion' and not explicit_completion(message['text']):
                 raise Stop('Completion source does not contain explicit completion wording.')
             kinds.add(fact['kind'])
         for field in ('requester', 'worker'):
             if item[field] != '확인 필요' and field not in kinds:
                 raise Stop('Role assignment lacks evidence.')
         if item['section'] == 'done':
-            if friday:
-                raise Stop('Friday report must exclude completed tasks.')
             try:
                 completed = dt.date.fromisoformat(item['completed_date'])
             except ValueError:
                 raise Stop('Completion date is missing.') from None
-            if not monday - dt.timedelta(days=7) <= completed < monday or 'completion' not in kinds:
-                raise Stop('Completion is outside the prior week or lacks evidence.')
+            first, last = completion_window(monday, friday)
+            if not first <= completed <= last or 'completion' not in kinds:
+                raise Stop('Completion is outside the report completion period or lacks evidence.')
+            if not any(explicit_completion_date(messages[fact['source_id']], completed)
+                       for fact in item['facts'] if fact['kind'] == 'completion'):
+                raise Stop('Completion date is not explicit in the cited source.')
+
+
+def ground_uncertain_roles(items, sources):
+    """Unsupported roles become unknown, as required; never infer replacements."""
+    for item in items:
+        if item['thread_ts'] not in sources:
+            continue  # The strict validator rejects unknown task sources.
+        messages = {m.get('evidence_id'): m for m in sources[item['thread_ts']]}
+        grounded = []
+        for fact in item['facts']:
+            message = messages.get(fact['source_id'])
+            if not message or not message.get('text'):
+                if fact['kind'] == 'completion' and item['section'] == 'done':
+                    grounded.append(fact)  # Completion claims must still fail closed.
+                continue
+            if fact['kind'] in {'requester', 'worker'}:
+                role = item[fact['kind']]
+                actors = set(re.findall(r'<@(U[A-Z0-9]+)(?:\|[^>]+)?>', message['text']))
+                actors.add(message.get('user', ''))
+                if role != '확인 필요' and not any(role == '<@' + actor + '>' for actor in actors if actor):
+                    continue
+            grounded.append(fact)
+        item['facts'] = grounded
+        for field in ('requester', 'worker'):
+            if not any(f['kind'] == field for f in grounded):
+                unsupported = item[field]
+                item[field] = '확인 필요'
+                if unsupported != '확인 필요':
+                    item['status'] = item['status'].replace(unsupported, '담당 확인 필요')
 
 
 def cell(value):
@@ -256,11 +344,12 @@ def cell(value):
 
 
 def headings(monday, friday):
-    end = monday + dt.timedelta(days=4 if friday else 6)
+    end = monday + dt.timedelta(days=6)
     sections = [('main', '① 이번 주 주요 업무 ㅣ ' + monday.strftime('%m/%d') + '~' + end.strftime('%m/%d')),
                 ('planned', '② 진행 예정 업무'), ('coordination', '③ 일정 조율 업무')]
-    if not friday:
-        sections.append(('done', '④ 전주 완료 업무 ㅣ ' + (monday - dt.timedelta(days=7)).strftime('%m/%d') + '~' + (monday - dt.timedelta(days=1)).strftime('%m/%d')))
+    first, last = completion_window(monday, friday)
+    sections.append(('done', ('④ 이번 주 완료 업무 ㅣ ' if friday else '④ 전주 완료 업무 ㅣ ')
+                     + first.strftime('%m/%d') + '~' + last.strftime('%m/%d')))
     return sections
 
 
@@ -344,24 +433,49 @@ def publish(parent, intro, detail, day, blocks=None):
     raise Stop('Detail reply could not be verified.')
 
 
+def report_period(now, mode, dry):
+    if mode not in {'auto', 'monday', 'friday'}:
+        raise Stop('Invalid report mode.')
+    if mode == 'auto' and now.weekday() not in (0, 4):
+        raise Stop('Scheduled run is outside Monday/Friday.')
+    friday = mode == 'friday' or (mode == 'auto' and now.weekday() == 4)
+    monday = now.date() - dt.timedelta(days=now.weekday())
+    day = monday + dt.timedelta(days=4 if friday else 0)
+    nominal = dt.datetime.combine(day, dt.time(17 if friday else 9), KST)
+    # Manual validation must cover a complete, already elapsed report window.
+    if dry and now < nominal:
+        monday -= dt.timedelta(days=7)
+        day -= dt.timedelta(days=7)
+        nominal -= dt.timedelta(days=7)
+    if not dry and (now.date() != day or now < nominal or now - nominal > dt.timedelta(hours=2)):
+        raise Stop('Posting window is closed.')
+    return monday, day, friday, nominal
+
+
+def introduction(start, cutoff, day, friday):
+    weekday = '금' if friday else '월'
+    target = '`#' + CHANNEL_NAME + '`' if CHANNEL_NAME else '<#' + CHANNEL + '>'
+    intro = TITLE + ('\n' + GROUP if GROUP and not friday else '')
+    scope = ' 게시글 및 ' if friday else ' 게시글·이전 미완료 후속 및 '
+    return (intro + '\n\n*기준일:* ' + day.strftime('%Y.%m.%d') + '(' + weekday + ') KST\n'
+        + '*대상:* ' + target + ' ' + start.strftime('%Y.%m.%d') + ('(월)' if friday else '')
+        + '~' + cutoff.strftime('%Y.%m.%d') + ('(금)' if friday else '')
+        + scope + cutoff.strftime('%m/%d %H:%M') + '까지의 관련 스레드\n'
+        + '*제외:* 타 Slack 채널 요청 디자인 프로젝트 건\n*판정:* 담당자·완료 여부 불명확 → *확인 필요*로 표시')
+
+
 def main():
     for key in ('SLACK_BOT_TOKEN', 'OPENAI_API_KEY'):
         if not os.environ.get(key):
             raise Stop('Required GitHub Secret missing: ' + key)
-    if not all((CHANNEL, BOT, TEAM, GROUP)) or not re.fullmatch(r'https://[a-zA-Z0-9-]+\.slack\.com', WORKSPACE):
+    if not REPORT_POLICY:
+        raise Stop('Required GitHub Secret missing: REPORT_POLICY')
+    if not all((CHANNEL, BOT, TEAM)) or not re.fullmatch(r'https://[a-zA-Z0-9-]+\.slack\.com', WORKSPACE):
         raise Stop('Required Slack configuration variables missing or invalid.')
     now = dt.datetime.now(KST)
     mode = os.environ.get('REPORT_MODE', 'auto')
-    friday = mode == 'friday' or (mode == 'auto' and now.weekday() == 4)
-    if mode == 'auto' and now.weekday() not in (0, 4):
-        raise Stop('Scheduled run is outside Monday/Friday.')
-    monday = now.date() - dt.timedelta(days=now.weekday())
-    day = monday + dt.timedelta(days=4 if friday else 0)
-    nominal = dt.datetime.combine(day, dt.time(17 if friday else 9), KST)
-    cutoff = min(now, nominal)
     dry = os.environ.get('PUBLISH', 'false') != 'true'
-    if not dry and (now.date() != day or now < nominal or now - nominal > dt.timedelta(hours=2)):
-        raise Stop('Posting window is closed.')
+    monday, day, friday, cutoff = report_period(now, mode, dry)
     identity = slack('auth.test')
     if identity.get('team_id') != TEAM or identity.get('user_id') != BOT:
         raise Stop('Unexpected Slack bot identity.')
@@ -375,13 +489,16 @@ def main():
         if found and not dry:
             print('Report already complete. No duplicate sent.')
             return
-    start = dt.datetime.combine(monday if friday else now.date() - dt.timedelta(days=14), dt.time(), KST)
+    start = dt.datetime.combine(monday if friday else monday - dt.timedelta(days=14), dt.time(), KST)
     history = [m for m in history if float(m['ts']) <= cutoff.timestamp()]
     sources = collect(history, start.timestamp(), str(cutoff.timestamp()))
     context = {'mode': 'friday' if friday else 'monday', 'week_monday': monday.isoformat(),
-               'cutoff_kst': cutoff.isoformat(), 'previous_week_start': (monday - dt.timedelta(days=7)).isoformat()}
+               'cutoff_kst': cutoff.isoformat(), 'previous_week_start': (monday - dt.timedelta(days=7)).isoformat(),
+               'completion_start': completion_window(monday, friday)[0].isoformat(),
+               'completion_end': completion_window(monday, friday)[1].isoformat()}
     for attempt in range(2):
         items = summarize(sources, context)
+        ground_uncertain_roles(items, sources)
         try:
             validate(items, sources, monday, friday)
             detail = render(items, monday, friday)
@@ -392,14 +509,12 @@ def main():
                 raise
             context['repair'] = {'failure': str(error), 'previous_items': items}
             print('Draft validation requested one correction pass. No content logged.')
-    weekday = '금' if friday else '월'
-    intro = (TITLE + '\n' + GROUP + '\n\n*기준일:* ' + day.strftime('%Y.%m.%d') + '(' + weekday + ') KST\n'
-        + '*대상:* `#06_design_lab` ' + start.strftime('%Y.%m.%d') + '~' + cutoff.strftime('%Y.%m.%d')
-        + ' 게시글·이전 미완료 후속 및 ' + cutoff.strftime('%m/%d %H:%M') + '까지의 관련 스레드\n'
-        + '*제외:* 타 Slack 채널 요청 디자인 프로젝트 건\n*판정:* 담당자·완료 여부 불명확 → *확인 필요*로 표시')
+    intro = introduction(start, cutoff, day, friday)
     if dry:
         print('PASS: Sources collected and draft validated. Slack posting disabled.')
-        print('Task count: ' + str(len(items)))
+        print('Validated report date: ' + day.isoformat() + '; cutoff KST: ' + cutoff.isoformat())
+        print('Task count: ' + str(len(items)) + '; by section: ' + json.dumps(
+            {section: sum(i['section'] == section for i in items) for section, _ in headings(monday, friday)}))
         return
     publish(parent, intro, detail, day, blocks)
 

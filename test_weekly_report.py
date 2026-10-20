@@ -9,7 +9,8 @@ import weekly_report as report
 class WeeklyReportTests(unittest.TestCase):
     def setUp(self):
         config = patch.multiple(report, CHANNEL='C_TEST', BOT='U_TEST', TEAM='T_TEST',
-                                WORKSPACE='https://example.slack.com', GROUP='<!subteam^S_TEST>')
+                                WORKSPACE='https://example.slack.com', GROUP='<!subteam^S_TEST>',
+                                CHANNEL_NAME='test_design', REPORT_POLICY='Preserve confirmed corrections.')
         config.start()
         self.addCleanup(config.stop)
         self.monday = dt.date(2026, 10, 12)
@@ -28,15 +29,70 @@ class WeeklyReportTests(unittest.TestCase):
         with self.assertRaises(report.Stop):
             report.validate([self.item], self.sources, self.monday, False)
 
-    def test_completed_friday_rejected_and_previous_week_checked(self):
+    def test_completion_periods_are_distinct_for_monday_and_friday(self):
         self.item.update(section='done', completed_date='2026-10-09',
                          facts=[dict(kind='completion', source_id='E1')])
         report.validate([self.item], self.sources, self.monday, False)
         with self.assertRaises(report.Stop):
             report.validate([self.item], self.sources, self.monday, True)
+        self.item['completed_date'] = '2026-10-16'
+        self.sources['100.000001'][0]['text'] = '전체 게시 완료 10/16'
+        report.validate([self.item], self.sources, self.monday, True)
+        with self.assertRaises(report.Stop):
+            report.validate([self.item], self.sources, self.monday, False)
         self.item['completed_date'] = '2026-10-01'
         with self.assertRaises(report.Stop):
             report.validate([self.item], self.sources, self.monday, False)
+
+    def test_friday_completion_still_needs_real_completion_evidence(self):
+        self.item.update(section='done', completed_date='2026-10-16',
+                         facts=[dict(kind='completion', source_id='E_MISSING')])
+        report.ground_uncertain_roles([self.item], self.sources)
+        with self.assertRaises(report.Stop):
+            report.validate([self.item], self.sources, self.monday, True)
+        self.item['facts'] = [dict(kind='completion', source_id='E1')]
+        self.sources['100.000001'][0]['text'] = '시안 전달드립니다. 검토 부탁드립니다.'
+        with self.assertRaises(report.Stop):
+            report.validate([self.item], self.sources, self.monday, True)
+
+    def test_friday_renders_four_sections_with_current_week_completion(self):
+        self.item.update(section='done', completed_date='2026-10-16',
+                         facts=[dict(kind='completion', source_id='E1')])
+        result = report.render([self.item], self.monday, True)
+        self.assertIn('④ 이번 주 완료 업무 ㅣ 10/12~10/16', result)
+        self.assertIn('① 이번 주 주요 업무 ㅣ 10/12~10/18', result)
+        self.assertNotIn('전주 완료', result)
+        self.assertIn('이미지', result)
+        blocks = report.table_blocks([self.item], self.monday, True)
+        headings = [r[0]['elements'][0]['elements'][0].get('text', '') for r in blocks[0]['rows']]
+        self.assertTrue(any(h.startswith('④ 이번 주 완료 업무') for h in headings))
+
+    def test_manual_checks_use_last_complete_report_window(self):
+        now = dt.datetime(2026, 10, 20, 10, tzinfo=report.KST)
+        monday, day, friday, cutoff = report.report_period(now, 'friday', True)
+        self.assertEqual((monday, day, friday), (dt.date(2026, 10, 12), dt.date(2026, 10, 16), True))
+        self.assertEqual(cutoff, dt.datetime(2026, 10, 16, 17, tzinfo=report.KST))
+        monday, day, friday, cutoff = report.report_period(now, 'monday', True)
+        self.assertEqual((monday, day, friday), (dt.date(2026, 10, 19), dt.date(2026, 10, 19), False))
+        self.assertEqual(cutoff, dt.datetime(2026, 10, 19, 9, tzinfo=report.KST))
+
+    def test_scheduled_publish_still_enforces_day_and_two_hour_window(self):
+        for now, mode in ((dt.datetime(2026, 10, 20, 10, tzinfo=report.KST), 'monday'),
+                          (dt.datetime(2026, 10, 23, 16, tzinfo=report.KST), 'friday'),
+                          (dt.datetime(2026, 10, 23, 19, 1, tzinfo=report.KST), 'friday')):
+            with self.assertRaises(report.Stop):
+                report.report_period(now, mode, False)
+        now = dt.datetime(2026, 10, 23, 17, 20, tzinfo=report.KST)
+        self.assertEqual(report.report_period(now, 'auto', False)[3],
+                         dt.datetime(2026, 10, 23, 17, tzinfo=report.KST))
+
+    def test_friday_intro_omits_group_and_has_required_four_lines(self):
+        start = dt.datetime(2026, 10, 12, tzinfo=report.KST)
+        cutoff = dt.datetime(2026, 10, 16, 17, tzinfo=report.KST)
+        intro = report.introduction(start, cutoff, cutoff.date(), True)
+        self.assertNotIn(report.GROUP, intro)
+        self.assertIn('`#test_design`', intro)
+        self.assertEqual(len([line for line in intro.splitlines() if line]), 5)
 
     def test_length_and_inline_link(self):
         result = report.render([self.item], self.monday, False)
@@ -63,6 +119,76 @@ class WeeklyReportTests(unittest.TestCase):
         self.assertEqual(row[1]['elements'][0]['elements'][-1], {'type': 'user', 'user_id': 'UWORKER'})
         self.assertEqual(row[3]['elements'][0]['elements'][-1]['text'], '스레드')
         self.assertEqual(len(row), 4)
+
+    def test_unsupported_role_becomes_confirmation_required(self):
+        self.item['worker'] = '<@UWRONG>'
+        self.item['facts'] = [dict(kind='worker', source_id='E1')]
+        report.ground_uncertain_roles([self.item], self.sources)
+        self.assertEqual(self.item['worker'], '확인 필요')
+        self.assertEqual(self.item['facts'], [])
+        report.validate([self.item], self.sources, self.monday, False)
+
+    def test_role_schema_and_citation_support_slack_named_mentions(self):
+        self.sources['100.000001'][0]['text'] = '<@UWORKER|sample> 작업 요청합니다.'
+        self.item['worker'] = '<@UWORKER>'
+        self.item['facts'] = [dict(kind='worker', source_id='E1')]
+        report.ground_uncertain_roles([self.item], self.sources)
+        report.validate([self.item], self.sources, self.monday, False)
+        self.assertEqual(self.item['worker'], '<@UWORKER>')
+        properties = report.schema(self.sources)['properties']['items']['items']['properties']
+        self.assertIn('<@UWORKER>', properties['worker']['enum'])
+        self.assertNotIn('<@UWRONG>', properties['worker']['enum'])
+
+    def test_completed_claim_rejects_deadline_negative_and_pending_approval(self):
+        self.item.update(section='done', completed_date='2026-10-09',
+                         facts=[dict(kind='completion', source_id='E1')])
+        for text in ('10/9 마감', '10/9 미완료', '10/9 완료 예정', '10/9 완료되지 않았습니다.',
+                     '10/9 제작 완료, 승인 대기', '10/9 완료 여부 확인 필요', '10/9 종료 전 검토',
+                     '10/9 마감 완료 예정', '10/9 완료가 안되었습니다.', '10/9 완료됐나요?'):
+            with self.subTest(text=text):
+                self.sources['100.000001'][0]['text'] = text
+                with self.assertRaises(report.Stop):
+                    report.validate([self.item], self.sources, self.monday, False)
+        for text in ('10/9 전체 게시 완료', '10/9 마감 완료했습니다.', '2026년 10월 9일 종료'):
+            with self.subTest(text=text):
+                self.sources['100.000001'][0]['text'] = text
+                report.validate([self.item], self.sources, self.monday, False)
+
+    def test_completion_date_cannot_be_invented_from_message_timestamp(self):
+        self.item.update(section='done', completed_date='2026-10-09',
+                         facts=[dict(kind='completion', source_id='E1')])
+        self.sources['100.000001'][0].update(text='전체 게시 완료했습니다.',
+            ts=str(dt.datetime(2026, 10, 9, 14, tzinfo=report.KST).timestamp()))
+        with self.assertRaises(report.Stop):
+            report.validate([self.item], self.sources, self.monday, False)
+        self.sources['100.000001'][0]['text'] = '오늘 전체 게시 완료했습니다.'
+        report.validate([self.item], self.sources, self.monday, False)
+        self.sources['100.000001'][0]['text'] = '10/8 전체 게시 완료했습니다.'
+        with self.assertRaises(report.Stop):
+            report.validate([self.item], self.sources, self.monday, False)
+
+    def test_carry_over_sources_older_than_four_reports_are_reopened(self):
+        task = {'ts': '100.000001', 'text': '기존 미완료 요청'}
+        history = [task] + [{'ts': str(n) + '.000001', 'text': '이번 주 디자인 업무 현황'}
+                            for n in range(200, 206)]
+        task['ts'] = '1000000000.000001'
+        link = report.WORKSPACE + '/archives/' + report.CHANNEL + '/p1000000000000001'
+        def report_replies(ts, cutoff):
+            if ts == '200.000001':
+                return [{'ts': ts, 'text': '보고'}, {'ts': '200.000002', 'user': report.BOT, 'text': link}]
+            return [{'ts': ts, 'text': '보고'}]
+        with patch.object(report, 'thread', side_effect=report_replies) as fetch:
+            result = report.collect(history, 2000000000, '3000000000')
+        self.assertIn(task['ts'], result)
+        self.assertEqual(fetch.call_count, 6)
+
+    def test_carry_over_source_filtered_as_bot_fails_closed(self):
+        root = {'ts': '1000000000.000001', 'text': '기존 요청', 'user': report.BOT}
+        history = [root, {'ts': '2000000000.000001', 'text': '이번 주 디자인 업무 현황'}]
+        link = report.WORKSPACE + '/archives/' + report.CHANNEL + '/p1000000000000001'
+        with patch.object(report, 'thread', return_value=[{'text': '보고'}, {'text': link, 'user': report.BOT}]):
+            with self.assertRaises(report.Stop):
+                report.collect(history, 2100000000, '3000000000')
 
     def test_old_thread_recent_reply_is_collected(self):
         history = [{'ts': '100.000001', 'text': '오래된 요청', 'reply_count': 1, 'latest_reply': '900.000001'}]

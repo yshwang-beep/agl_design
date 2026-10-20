@@ -16,29 +16,47 @@ Required repository Secrets:
 
 - `SLACK_BOT_TOKEN`: installed Design Team Bot credential; do not put it in code.
 - `OPENAI_API_KEY`: OpenAI API project credential. API usage has separate billing.
+- `REPORT_POLICY`: private confirmed task corrections. Required so a missing
+  migration policy cannot silently reopen closed work. Keep this in Secrets,
+  not Variables: ordinary step environment values appear in public Actions logs.
 
 Optional repository Variables:
 
 - `OPENAI_MODEL`: defaults to `gpt-4.1`.
 - `REPORTS_ENABLED`: defaults off. Set `true` only after successful manual Monday
   and Friday draft runs and disabling the corresponding old cloud schedules.
+- `SLACK_CHANNEL_NAME`: optional display name; without it Slack's channel mention
+  renders the configured channel. Do not hardcode workspace names in source.
 
 Required repository Variables (enter actual internal IDs in settings, not source):
-`SLACK_CHANNEL_ID`, `SLACK_BOT_USER_ID`, `SLACK_TEAM_ID`, `SLACK_GROUP_MENTION`,
+`SLACK_CHANNEL_ID`, `SLACK_BOT_USER_ID`, `SLACK_TEAM_ID`,
 `SLACK_WORKSPACE_URL` (the workspace's HTTPS Slack origin).
+`SLACK_GROUP_MENTION` is optional and used only in Monday intros.
 
 ## Reporting
 
 - Monday 09:00 Asia/Seoul: recent 14 days, current week open work, prior report
   sources followed up, previous Monday–Sunday explicit completions.
-- Friday 17:00 Asia/Seoul: Monday–Friday relevant open work; completed work omitted.
-- Both post a short introduction with the design group mention and one thread reply.
+- Friday 17:00 Asia/Seoul: current-week relevant open work, including weekend
+  deadlines, and explicitly completed Monday–Friday work in the fourth section.
+- Both post a short introduction and one thread reply. Friday has no group mention.
+- A manual validation uses the most recent already elapsed nominal report time,
+  so a Friday check on Tuesday tests the previous Friday's full reporting period.
 - The runner scans channel root metadata for fresh replies on old threads and
-  reopens links from the four latest reports. Older items absent from all four
-  reports and without new replies are not rediscovered as carry-over work.
+  reopens original source links from every accessible prior report. There is no
+  fixed four-report carry-over limit. Inaccessible carried sources stop the run.
+- This runner rescans Slack; it does not migrate or update the former private
+  ChatGPT Page's incremental checkpoint, cached drafts or delivery state. Old work
+  never linked by a report and without recent activity can remain undiscovered.
+  Do not describe this as a migration of that private cache.
 - Previous reports locate source threads; their claims are not fresh evidence.
 - Human report-thread corrections can serve as evidence. Attachments themselves
   are not downloaded or analyzed; important facts only in attachments require review.
+- Role choices are restricted to users present in source data. A role absent from
+  its cited original message becomes `확인 필요`; no substitute person is inferred.
+- Completed rows require positive completion wording, a real cited source, an
+  explicit date expression in that source and the correct Monday/Friday date
+  window. Deadlines, negative completion wording and pending approval fail closed.
 - Only the designated channel is read. Notion board updates, personal briefings
   and ChatGPT Page state synchronization are outside this workflow.
 
