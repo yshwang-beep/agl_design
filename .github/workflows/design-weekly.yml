@@ -30,8 +30,10 @@ jobs:
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          REPORT_POLICY: ${{ secrets.REPORT_POLICY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4.1' }}
           SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
+          SLACK_CHANNEL_NAME: ${{ vars.SLACK_CHANNEL_NAME }}
           SLACK_BOT_USER_ID: ${{ vars.SLACK_BOT_USER_ID }}
           SLACK_TEAM_ID: ${{ vars.SLACK_TEAM_ID }}
           SLACK_GROUP_MENTION: ${{ vars.SLACK_GROUP_MENTION }}
