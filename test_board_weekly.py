@@ -15,6 +15,14 @@ def stamp(day, hour=12):
 
 
 class BoardTests(unittest.TestCase):
+    def test_workboard_diagnostics_expose_only_safe_fixed_codes(self):
+        for raw, expected in [(b'error code: 1010\n', 'cloudflare_edge_1010'),
+                              (b'{"error":"automation_identity_denied"}', 'automation_identity_denied'),
+                              (b'{"error":"PRIVATE_SOURCE_CANARY"}', 'unclassified_rejection'),
+                              (b'PRIVATE_SOURCE_CANARY', 'unclassified_rejection')]:
+            error = urllib.error.HTTPError('https://example.invalid', 403, 'Denied', {}, io.BytesIO(raw))
+            self.assertEqual(board.workboard_error_code(error), expected)
+
     def setUp(self):
         self.cfg = {'team_id': 'TTEST', 'bot_user_id': 'UBOT', 'workspace_url': 'https://example.slack.com',
             'core_channel_ids': ['CTEST'], 'notice_channel_id': 'CTEST', 'group_id': 'SGROUP',

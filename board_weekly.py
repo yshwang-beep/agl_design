@@ -32,6 +32,24 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise urllib.error.HTTPError(req.full_url, code, 'Redirect refused', headers, fp)
 
 
+def workboard_error_code(error):
+    """Expose only documented application codes, never arbitrary error bodies."""
+    allowed = {'automation_not_configured', 'automation_clock_invalid', 'bearer_token_required',
+        'invalid_token', 'automation_identity_denied', 'token_time_invalid', 'browser_origin_denied',
+        'oidc_keys_unavailable', 'signature_invalid', 'automation_request_failed',
+        'automation_invalid_request', 'automation_state_conflict', 'automation_evidence_rejected',
+        'automation_window_closed', 'automation_verification_failed', 'automation_store_rejected',
+        'automation_revision_conflict'}
+    try:
+        raw = error.read(4096)
+        if raw.strip() == b'error code: 1010':
+            return 'cloudflare_edge_1010'
+        value = json.loads(raw).get('error')
+        return value if isinstance(value, str) and value in allowed else 'unclassified_rejection'
+    except Exception:
+        return 'unclassified_rejection'
+
+
 def http_json(url, token, payload=None, service='Service', retry_read=False):
     data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode()
     headers = {'Authorization': 'Bearer ' + token, 'Accept': 'application/json'}
@@ -52,7 +70,8 @@ def http_json(url, token, payload=None, service='Service', retry_read=False):
                     continue
             if error.code >= 500:
                 raise Stop(service + ' server outcome uncertain; verify receipts before retrying writes.') from None
-            raise Rejected(service + ' HTTP request rejected (' + str(error.code) + ').') from None
+            detail = '; ' + workboard_error_code(error) if service == 'Workboard' else ''
+            raise Rejected(service + ' HTTP request rejected (' + str(error.code) + detail + ').') from None
         except Exception:
             raise Stop(service + ' outcome uncertain; do not retry writes without checking receipts.') from None
 
