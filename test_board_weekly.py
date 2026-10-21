@@ -15,6 +15,16 @@ def stamp(day, hour=12):
 
 
 class BoardTests(unittest.TestCase):
+    def test_slack_rate_spacing_is_preserved_per_method(self):
+        slack = board.Slack('synthetic', 'user')
+        with patch.object(board, 'http_json', return_value={'ok':True}), \
+                patch.object(board.time, 'monotonic', return_value=10.0), \
+                patch.object(board.time, 'sleep') as sleep:
+            slack.call('conversations.info', {'channel':'CTEST'})
+            slack.call('conversations.history', {'channel':'CTEST'})
+            slack.call('conversations.history', {'channel':'CTEST'})
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [0, 0, 1.3])
+
     def test_workboard_uses_the_approved_automation_identity_header(self):
         opener = MagicMock()
         opener.open.return_value.__enter__.return_value.read.return_value = b'{"ok":true}'

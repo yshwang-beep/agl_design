@@ -133,7 +133,7 @@ class Slack:
 
     def __init__(self, token, kind, publish=False):
         self.token, self.kind, self.publish = token, kind, publish
-        self.last_read = 0.0
+        self.last_read = {}
 
     def call(self, method, params=None, write=False):
         allowed = self.READ_USER if self.kind == 'user' else self.READ_BOT
@@ -143,8 +143,8 @@ class Slack:
         elif method not in allowed:
             raise Stop('Slack method is outside channel-only collection scope.')
         if not write:
-            time.sleep(max(0, 1.3 - (time.monotonic() - self.last_read)))
-            self.last_read = time.monotonic()
+            time.sleep(max(0, 1.3 - (time.monotonic() - self.last_read.get(method, 0.0))))
+            self.last_read[method] = time.monotonic()
         url = 'https://slack.com/api/' + method
         if not write:
             url += '?' + urllib.parse.urlencode(params or {})
@@ -234,7 +234,7 @@ def collect_sources(slack, cfg, snapshot, start, end):
     result, coverage, processed, evidence_no = {}, [], set(), 0
     excluded = 0
     latest = format(end.timestamp() - 0.000001, '.6f')
-    for channel_id in sorted(by_id):
+    for channel_index, channel_id in enumerate(sorted(by_id), 1):
         core = channel_id in cfg['core_channel_ids']
         listed = by_id[channel_id]
         if not core and any(re.search(pattern, listed.get('name', ''), re.I)
@@ -291,11 +291,18 @@ def collect_sources(slack, cfg, snapshot, start, end):
                            'reference_aliases': sorted(aliases.get(stamp, set())),
                            'current_ids': [m['evidence_id'] for m in compact if float(m['ts']) >= start.timestamp()]}
         coverage.append({'id': channel_id, 'type': kind, 'complete': True})
+        if len(json.dumps(result, ensure_ascii=False)) > 240000:
+            raise Stop('Relevant source input exceeds budget; no silent truncation.')
+        if channel_index % 10 == 0:
+            print('Collection progress: ' + str(channel_index) + '/' + str(len(by_id))
+                  + ' channels checked; relevant threads: ' + str(len(result)) + '.', flush=True)
     eligible = {c['id'] for c in coverage}
     if any(ch not in eligible or (ch, ts) not in processed for ch, ts in carry):
         raise Stop('An unfinished task source could not be rechecked; no update accepted.')
     if len(json.dumps(result, ensure_ascii=False)) > 240000:
         raise Stop('Relevant source input exceeds budget; no silent truncation.')
+    print('Collection complete: ' + str(len(coverage)) + ' channels; relevant threads: '
+          + str(len(result)) + '.', flush=True)
     return result, {'complete': True, 'channels': coverage, 'excludedChannelCount': excluded,
                     'threadCount': len(result), 'evidenceCount': evidence_no}
 
