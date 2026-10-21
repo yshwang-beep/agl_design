@@ -26,6 +26,8 @@ Repository Secrets: `BOARD_CONFIG`, `SLACK_USER_TOKEN`, `SLACK_BOT_TOKEN`,
 `WORKBOARD_URL`, containing only the workboard HTTPS origin. `BOARD_CONFIG`
 contains the workspace identity, eight designers, channel IDs, mention group,
 collaborators, exclusions, and collection policy. Keep this configuration private.
+`SLACK_GROUP_MENTION` optionally supplies the shared group/user mention tokens in
+the notice parent text; without it, the configured design-group mention is used.
 
 The user token needs public-channel read/history scopes. Collection enumerates
 public channels and explicitly checks channel types; personal and group DMs are

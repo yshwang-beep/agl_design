@@ -36,7 +36,8 @@ Optional repository Variables:
 Required repository Variables (enter actual internal IDs in settings, not source):
 `SLACK_CHANNEL_ID`, `SLACK_BOT_USER_ID`, `SLACK_TEAM_ID`,
 `SLACK_WORKSPACE_URL` (the workspace's HTTPS Slack origin).
-`SLACK_GROUP_MENTION` is optional and used only in Monday intros.
+`SLACK_GROUP_MENTION` is optional and contains the shared Slack group/user mention
+tokens for both Monday and Friday parent intros and the workboard notice.
 
 ## Reporting
 
@@ -44,7 +45,8 @@ Required repository Variables (enter actual internal IDs in settings, not source
   sources followed up, previous Monday–Sunday explicit completions.
 - Friday 17:00 Asia/Seoul: current-week relevant open work, including weekend
   deadlines, and explicitly completed Monday–Friday work in the fourth section.
-- Both post a short introduction and one thread reply. Friday has no group mention.
+- Both post a short introduction and one thread reply. Configured group/user
+  mentions appear once in the parent introduction.
 - A manual validation uses the most recent already elapsed nominal report time,
   so a Friday check on Tuesday tests the previous Friday's full reporting period.
 - The runner scans channel root metadata for fresh replies on old threads and

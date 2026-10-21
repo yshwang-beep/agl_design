@@ -86,13 +86,23 @@ class WeeklyReportTests(unittest.TestCase):
         self.assertEqual(report.report_period(now, 'auto', False)[3],
                          dt.datetime(2026, 10, 23, 17, tzinfo=report.KST))
 
-    def test_friday_intro_omits_group_and_has_required_four_lines(self):
+    def test_friday_intro_includes_configured_mentions_and_required_scope(self):
         start = dt.datetime(2026, 10, 12, tzinfo=report.KST)
         cutoff = dt.datetime(2026, 10, 16, 17, tzinfo=report.KST)
         intro = report.introduction(start, cutoff, cutoff.date(), True)
-        self.assertNotIn(report.GROUP, intro)
+        self.assertIn(report.GROUP, intro)
         self.assertIn('`#test_design`', intro)
-        self.assertEqual(len([line for line in intro.splitlines() if line]), 5)
+        self.assertEqual(len([line for line in intro.splitlines() if line]), 6)
+
+    def test_monday_and_friday_mentions_are_in_parent_once(self):
+        mentions = '<!subteam^S_TEST> <@U_REVIEWER> <@U_CEO>'
+        start = dt.datetime(2026, 10, 12, tzinfo=report.KST)
+        cutoff = start.replace(hour=9)
+        with patch.object(report, 'GROUP', mentions):
+            for friday in (False, True):
+                intro = report.introduction(start, cutoff, cutoff.date(), friday)
+                self.assertEqual(intro.count(mentions), 1)
+                self.assertNotIn(mentions, report.render([self.item], self.monday, friday))
 
     def test_length_and_inline_link(self):
         result = report.render([self.item], self.monday, False)

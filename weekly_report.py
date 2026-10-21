@@ -455,7 +455,7 @@ def report_period(now, mode, dry):
 def introduction(start, cutoff, day, friday):
     weekday = '금' if friday else '월'
     target = '`#' + CHANNEL_NAME + '`' if CHANNEL_NAME else '<#' + CHANNEL + '>'
-    intro = TITLE + ('\n' + GROUP if GROUP and not friday else '')
+    intro = TITLE + ('\n' + GROUP if GROUP else '')
     scope = ' 게시글 및 ' if friday else ' 게시글·이전 미완료 후속 및 '
     return (intro + '\n\n*기준일:* ' + day.strftime('%Y.%m.%d') + '(' + weekday + ') KST\n'
         + '*대상:* ' + target + ' ' + start.strftime('%Y.%m.%d') + ('(월)' if friday else '')

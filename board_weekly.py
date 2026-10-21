@@ -579,7 +579,10 @@ class BoardAPI:
 
 def notice_text(cfg, period, board_url):
     label = period['start'].replace('-', '.') + '–' + period['end'][5:].replace('-', '.')
-    group = '\n<!subteam^' + cfg['group_id'] + '>' if cfg.get('group_id') else ''
+    mentions = os.environ.get('SLACK_GROUP_MENTION', '').strip()
+    if not mentions and cfg.get('group_id'):
+        mentions = '<!subteam^' + cfg['group_id'] + '>'
+    group = '\n' + mentions if mentions else ''
     return ('*디자인팀 주간 업무 취합 업데이트*' + group + '\n\n디자인팀 업무 취합 내용을 업데이트했습니다.\n'
             '<' + board_url + '|담당별 업무 확인·수정>\n\n· 보고 기간: ' + label + '\n'
             '· 10시 전까지 현재 상황·이슈, 다음 행동, 결정 요청을 확인·수정해 주세요.\n'
