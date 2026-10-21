@@ -226,23 +226,34 @@ class BoardTests(unittest.TestCase):
         self.sources[self.key]['messages'][1]['text'] = '전체 게시 완료했습니다.'
         self.assertEqual(self.payload()['status'], '완료')
         self.sources[self.key]['messages'][1]['text'] = '전체 게시 완료했습니다. 승인 대기'
-        with self.assertRaises(board.Stop):
-            self.payload()
+        self.assertEqual(self.payload()['status'], '확인 필요')
+        self.assertIn('확인 필요', self.payload()['verification'])
         self.sources[self.key]['messages'][1]['text'] = '전체 게시 완료했습니다.'
         self.sources[self.key]['messages'][1]['ts'] = stamp(1)
         self.item['evidenceIds'] = ['E1']
-        with self.assertRaises(board.Stop):
-            self.payload()
+        self.assertEqual(self.payload()['status'], '확인 필요')
 
     def test_progress_cannot_be_inferred(self):
         self.item['progress'] = '80'
-        with self.assertRaises(board.Stop):
-            self.payload()
+        self.assertEqual(self.payload()['progress'], '')
         self.item['progressFact'] = {'sourceId': 'E2', 'quote': '진행률 80%입니다.'}
         self.assertEqual(self.payload()['progress'], '80')
         self.item['progress'] = '90'
-        with self.assertRaises(board.Stop):
-            self.payload()
+        self.assertEqual(self.payload()['progress'], '')
+
+    def test_unevidenced_due_is_blank_and_marked_for_review(self):
+        self.item['due'] = '2026-10-31'
+        result = self.payload()
+        self.assertEqual(result['due'], '')
+        self.assertIn('확인 필요', result['dueNote'])
+
+    def test_newer_pending_stage_clears_completion_and_unsupported_progress(self):
+        self.item.update(status='완료', progress='100', completionFact={'sourceId':'E1','quote':'전체 게시 완료했습니다.'})
+        self.sources[self.key]['messages'][0]['text'] = '전체 게시 완료했습니다.'
+        self.sources[self.key]['messages'][1]['text'] = '승인 대기'
+        result = self.payload()
+        self.assertEqual(result['status'], '확인 필요')
+        self.assertEqual(result['progress'], '')
 
     def test_existing_task_matching_requires_same_thread_and_same_deliverable_title(self):
         self.item['sourceTaskId'] = 'old-task'

@@ -462,12 +462,15 @@ def task_payloads(items, sources, active, cfg, start, end):
             raise Stop('Invalid board status.')
         completion_valid = bool(completion and start.timestamp() <= float(completion['ts']) < end.timestamp()
             and explicit_completion(item['completionFact']['quote']) and explicit_completion(completion['text']))
-        if item['status'] == '완료' and not completion_valid:
-            raise Stop('Board completion lacks explicit non-pending original evidence.')
-        if item['status'] == '완료' and any(float(m['ts']) >= float(completion['ts'])
+        verification = []
+        status = item['status']
+        pending = bool(completion and any(float(m['ts']) >= float(completion['ts'])
                 and re.search(r'(?:승인|검토|게시|입고|전달)\s*(?:대기|필요|예정|중)|미완료|완료되지', m['text'])
-                for m in source['messages']):
-            raise Stop('Newer source still has a pending stage; completion requires review.')
+                for m in source['messages']))
+        if status == '완료' and (not completion_valid or pending):
+            status = '확인 필요'
+            completion_valid = False
+            verification.append('전체 완료의 명시적 근거 또는 후속 대기 단계 확인 필요')
         progress = item['progress']
         if progress:
             if not re.fullmatch(r'\d{1,3}', progress) or int(progress) > 100:
@@ -477,15 +480,18 @@ def task_payloads(items, sources, active, cfg, start, end):
                 and re.search(r'(?<!\d)' + re.escape(progress) + r'\s*%', item['progressFact']['quote']))
             completed = progress == '100' and completion_valid
             if not (numerical or completed):
-                raise Stop('Board progress was inferred instead of explicitly evidenced.')
-        if item['due']:
+                progress = ''
+                verification.append('진행률 원문 근거 확인 필요')
+        due_value, due_note = item['due'], item['dueNote']
+        if due_value:
             try:
-                due = dt.date.fromisoformat(item['due'])
+                due = dt.date.fromisoformat(due_value)
             except ValueError:
                 raise Stop('Invalid board due date.') from None
             from weekly_report import explicit_completion_date
             if not any(explicit_completion_date(m, due) for m in source['messages']):
-                raise Stop('Board due date has no explicit source date.')
+                due_value, due_note = '', '일정 원문 근거 확인 필요'
+                verification.append('명시적 일정 확인 필요')
         fields = {}
         for field, limit in (('issue', 3), ('next', 2), ('decision', 2)):
             if len(item[field]) > limit or any(not isinstance(v, str) or '\n' in v or len(v) > 120 for v in item[field]):
@@ -506,10 +512,11 @@ def task_payloads(items, sources, active, cfg, start, end):
             raise Stop('Invalid board chapter.')
         payload.append({'sourceTaskId': source_id or None, 'title': title,
             'owner': ', '.join(people[o] for o in dict.fromkeys(owners)) or '확인 필요',
-            'requester': people.get(requester, '확인 필요'), 'status': item['status'],
+            'requester': people.get(requester, '확인 필요'), 'status': status,
             'chapter': ', '.join(chapters), 'collaborators': ', '.join(people[c] for c in dict.fromkeys(item['collaborators'])
                 if c in people and any(f['kind'] == 'collaborator' and f['actor'] == c and direct_role(f, messages) for f in item['roleFacts'])),
-            'due': item['due'], 'dueNote': item['dueNote'], 'progress': progress, 'reviewed': 'no',
+            'due': due_value, 'dueNote': due_note, 'progress': progress, 'reviewed': 'no',
+            'verification': ' · '.join(verification),
             'link': cfg['workspace_url'] + '/archives/' + source['channel_id'] + '/p' + source['thread_ts'].replace('.', ''),
             'evidence': evidence, **fields})
     return payload
