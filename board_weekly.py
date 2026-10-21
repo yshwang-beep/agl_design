@@ -442,8 +442,12 @@ def task_payloads(items, sources, active, cfg, start, end):
         evidence = []
         for eid in dict.fromkeys(item['evidenceIds']):
             message = messages.get(eid)
-            if not message or not start.timestamp() <= float(message['ts']) < end.timestamp():
-                raise Stop('Board evidence is outside its source or reporting period.')
+            if not message:
+                raise Stop('Board evidence belongs to another source or is unknown.')
+            # Older messages can establish context/roles, but cannot count as
+            # this week's evidence. Require at least one current citation below.
+            if not start.timestamp() <= float(message['ts']) < end.timestamp():
+                continue
             evidence.append({'channelId': source['channel_id'], 'ts': message['ts'],
                 'url': cfg['workspace_url'] + '/archives/' + source['channel_id'] + '/p' + message['ts'].replace('.', '')})
         if not evidence:
@@ -524,6 +528,23 @@ def task_payloads(items, sources, active, cfg, start, end):
             'link': cfg['workspace_url'] + '/archives/' + source['channel_id'] + '/p' + source['thread_ts'].replace('.', ''),
             'evidence': evidence, **fields})
     return payload
+
+
+def validate_draft(items, sources, active, cfg, start, end):
+    tasks, failures, seen = [], [], set()
+    for index, item in enumerate(items):
+        try:
+            identity = (item['sourceKey'], item['title'].strip().casefold())
+            if identity in seen:
+                raise Stop('Duplicate board task in draft.')
+            seen.add(identity)
+            tasks.extend(task_payloads([item], sources, active, cfg, start, end))
+        except Stop as error:
+            # Repair context stays inside the authorized model request, never
+            # in public Actions logs. Identify every bad row in one pass.
+            failures.append({'item_index': index, 'sourceKey': item['sourceKey'],
+                             'title': item['title'], 'failure': str(error)})
+    return tasks, failures
 
 
 class BoardAPI:
@@ -684,15 +705,15 @@ def execute(now=None):
     active = snapshot.get('activeTasks', [t for t in snapshot['tasks'] if not t.get('archived')])
     sources, coverage = collect_sources(user, cfg, snapshot, start, end)
     repair = None
-    for attempt in range(2):
+    for attempt in range(3):
         items = summarize(sources, active, cfg, period, repair)
-        try:
-            tasks = task_payloads(items, sources, active, cfg, start, end)
+        tasks, failures = validate_draft(items, sources, active, cfg, start, end)
+        if not failures:
             break
-        except Stop as error:
-            if attempt:
-                raise
-            repair = {'failure': str(error), 'previous_items': items}
+        if attempt == 2:
+            raise Stop('Board draft still has ' + str(len(failures)) + ' invalid task(s); no writes accepted.')
+        print('Draft repair required: ' + str(len(failures)) + ' task(s).', flush=True)
+        repair = {'failures': failures, 'previous_items': items}
     if not publish:
         print('PASS: Board dry run validated; no board or Slack writes.')
         print('Period: ' + period['start'] + ' to ' + period['end'] + '; task count: ' + str(len(tasks)))

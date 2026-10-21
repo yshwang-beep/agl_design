@@ -91,6 +91,16 @@ class BoardTests(unittest.TestCase):
         self.sources[self.key]['messages'][1]['ts'] = format(last, '.6f')
         self.payload()
         self.sources[self.key]['messages'][1]['ts'] = format(self.end.timestamp(), '.6f')
+        self.item['evidenceIds'] = ['E2']
+        with self.assertRaises(board.Stop):
+            self.payload()
+
+    def test_old_context_is_not_current_evidence_but_does_not_invalidate_current_citation(self):
+        self.sources[self.key]['messages'][1]['ts'] = stamp(1)
+        result = self.payload()
+        self.assertEqual(len(result['evidence']), 1)
+        self.assertEqual(result['evidence'][0]['ts'], self.sources[self.key]['messages'][0]['ts'])
+        self.item['evidenceIds'] = ['E2']
         with self.assertRaises(board.Stop):
             self.payload()
 
@@ -105,6 +115,17 @@ class BoardTests(unittest.TestCase):
                 with self.assertRaises(board.Stop):
                     api.call(operation, {})
             token.assert_not_called()
+
+    def test_draft_repair_identifies_all_bad_rows_and_cross_row_duplicates(self):
+        import copy
+        wrong = copy.deepcopy(self.item)
+        wrong['title'] = '연결 확인 대상'
+        wrong['evidenceIds'] = ['UNKNOWN']
+        tasks, failures = board.validate_draft([self.item, wrong, self.item], self.sources, [], self.cfg, self.start, self.end)
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual([f['item_index'] for f in failures], [1, 2])
+        self.assertIn('another source', failures[0]['failure'])
+        self.assertIn('Duplicate', failures[1]['failure'])
 
     def test_time_cutoffs_prevent_late_writes_and_wrong_day(self):
         board.ensure_write_window(self.now, self.monday)
