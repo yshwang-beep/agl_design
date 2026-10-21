@@ -120,6 +120,7 @@ class BoardTests(unittest.TestCase):
                                                     {'messages': [2]}]) as call:
             self.assertEqual(slack.pages('conversations.history', {'channel': 'CTEST'}), [1, 2])
             self.assertEqual(call.call_args.args[1]['cursor'], 'next')
+            self.assertEqual(call.call_args.args[1]['limit'], 999)
         for responses in ([{'messages': [], 'has_more': True}],
                           [{'messages': [], 'response_metadata': {'next_cursor': 'same'}}] * 2):
             with patch.object(slack, 'call', side_effect=responses), self.assertRaises(board.Stop):

@@ -153,10 +153,12 @@ class Slack:
             raise Rejected('Slack request explicitly rejected; no response content logged.')
         return result
 
-    def pages(self, method, params, key='messages', max_pages=300):
+    def pages(self, method, params, key='messages', max_pages=1000):
         rows, cursor, seen = [], '', set()
         for _ in range(max_pages):
-            result = self.call(method, dict(params, cursor=cursor, limit=100))
+            # Internal Slack apps support 999 rows per cursor page. Entire
+            # channel history is needed to discover fresh replies on old roots.
+            result = self.call(method, dict(params, cursor=cursor, limit=999))
             if not isinstance(result.get(key, []), list):
                 raise Stop('Slack pagination response is invalid.')
             rows.extend(result.get(key, []))
@@ -168,6 +170,9 @@ class Slack:
             if cursor in seen:
                 raise Stop('Slack repeated a pagination cursor; collection cancelled.')
             seen.add(cursor)
+            if len(seen) % 100 == 0:
+                print('Pagination progress: ' + method + '; pages: ' + str(len(seen))
+                      + '; rows: ' + str(len(rows)) + '.', flush=True)
         raise Stop('Slack pagination limit reached; no partial collection accepted.')
 
 
