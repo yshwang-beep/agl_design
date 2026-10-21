@@ -228,7 +228,10 @@ def collect_sources(slack, cfg, snapshot, start, end):
         by_id.setdefault(channel, {'id': channel})
     active = snapshot.get('activeTasks', [t for t in snapshot.get('tasks', []) if not t.get('archived')])
     unfinished = [t for t in active if t.get('status') != '완료']
-    carry = {ref for task in unfinished for ref in source_references(task)}
+    all_carry = {ref for task in unfinished for ref in source_references(task)}
+    # A manual snapshot may cite a later follow-up; it cannot be re-read as
+    # evidence belonging to an earlier reporting period.
+    carry = {(channel, stamp) for channel, stamp in all_carry if float(stamp) < end.timestamp()}
     keywords = list(cfg.get('project_keywords', []))
     keywords.extend(t['title'] for t in unfinished if t.get('title'))
     result, coverage, processed, evidence_no = {}, [], set(), 0
@@ -252,23 +255,37 @@ def collect_sources(slack, cfg, snapshot, start, end):
             if (float(root['ts']) >= start.timestamp() or float(root.get('latest_reply', '0')) >= start.timestamp()
                     or (channel_id, root['ts']) in carry):
                 candidates[root['ts']] = root
-        aliases = {}
-        history_ids = {m['ts'] for m in history}
+        aliases, thread_cache = {}, {}
+        history_by_id = {m['ts']:m for m in history}
+        def load_thread(stamp):
+            if stamp not in thread_cache:
+                root = history_by_id.get(stamp, {'ts':stamp,'reply_count':1})
+                thread_cache[stamp] = (slack.pages('conversations.replies', {'channel':channel_id,
+                    'ts':stamp,'latest':latest,'inclusive':'true'}) if root.get('reply_count') else [root])
+                if not thread_cache[stamp]:
+                    raise Stop('A required source thread is inaccessible.')
+            return thread_cache[stamp]
         for ch, stamp in carry:
             if ch == channel_id:
                 actual = stamp
-                if stamp not in history_ids:
-                    exact = slack.pages('conversations.history', {'channel': channel_id,
-                        'oldest': stamp, 'latest': stamp, 'inclusive': 'true'})
-                    found = [m for m in exact if m.get('ts') == stamp]
-                    if len(found) != 1:
+                if stamp not in history_by_id:
+                    # Channel history excludes ordinary thread replies. Locate
+                    # the exact reply inside eligible roots instead of asking
+                    # conversations.history for a reply it cannot return.
+                    possible = [root for root in history if root.get('reply_count')
+                        and float(root['ts']) < float(stamp) <= float(root.get('latest_reply','0'))]
+                    possible.sort(key=lambda root:float(root['ts']),reverse=True)
+                    actual = None
+                    for root in possible:
+                        if any(message.get('ts') == stamp for message in load_thread(root['ts'])):
+                            actual = root['ts']
+                            break
+                    if actual is None:
                         raise Stop('A carried message could not be resolved to its original thread.')
-                    actual = found[0].get('thread_ts', stamp)
                 aliases.setdefault(actual, set()).add(stamp)
                 candidates.setdefault(actual, {'ts': actual, 'reply_count': 1})
         for stamp, root in candidates.items():
-            messages = (slack.pages('conversations.replies', {'channel': channel_id, 'ts': stamp,
-                         'latest': latest, 'inclusive': 'true'}) if root.get('reply_count') else [root])
+            messages = load_thread(stamp)
             if not messages:
                 raise Stop('A required source thread is inaccessible.')
             # A persisted evidence link can refer to a reply; normalize its real root.
@@ -304,6 +321,7 @@ def collect_sources(slack, cfg, snapshot, start, end):
     print('Collection complete: ' + str(len(coverage)) + ' channels; relevant threads: '
           + str(len(result)) + '.', flush=True)
     return result, {'complete': True, 'channels': coverage, 'excludedChannelCount': excluded,
+                    'referencesAfterCutoffExcluded':len(all_carry-carry),
                     'threadCount': len(result), 'evidenceCount': evidence_no}
 
 
@@ -326,13 +344,12 @@ items가없으면빈배열이다. repair가있으면 지적된근거오류를수
 
 
 def board_schema(sources, active, cfg):
-    evidence = [m['evidence_id'] for s in sources.values() for m in s['messages']] or ['NONE']
     people = [p['id'] for p in cfg['designers'] + cfg.get('collaborators', [])]
     string = {'type': 'string'}
     proof = {'type': 'object', 'properties': {'sourceId': string, 'quote': string},
              'required': ['sourceId', 'quote'], 'additionalProperties': False}
     role = {'type': 'object', 'properties': {'kind': {'type': 'string', 'enum': ['owner', 'requester', 'collaborator']},
-            'actor': {'type': 'string', 'enum': people}, 'sourceId': {'type': 'string', 'enum': evidence}, 'quote': string},
+            'actor': {'type': 'string', 'enum': people}, 'sourceId': string, 'quote': string},
             'required': ['kind', 'actor', 'sourceId', 'quote'], 'additionalProperties': False}
     fields = {key: string for key in ('title', 'due', 'dueNote', 'progress')}
     fields.update({'sourceTaskId': {'type': 'string', 'enum': [''] + [t['id'] for t in active]},
@@ -342,7 +359,9 @@ def board_schema(sources, active, cfg):
         'collaborators': {'type': 'array', 'items': {'type': 'string', 'enum': people}},
         'chapters': {'type': 'array', 'items': {'type': 'string', 'enum': ['온라인', '오프라인', '공통', '확인 필요']}},
         'status': {'type': 'string', 'enum': STATUSES},
-        'evidenceIds': {'type': 'array', 'items': {'type': 'string', 'enum': evidence}},
+        # Message references are validated against the actual source after the
+        # response. Enumerating them twice can exceed the provider schema limit.
+        'evidenceIds': {'type': 'array', 'items': string},
         'roleFacts': {'type': 'array', 'items': role}, 'completionFact': proof, 'progressFact': proof})
     for key in ('issue', 'next', 'decision'):
         fields[key] = {'type': 'array', 'items': string}

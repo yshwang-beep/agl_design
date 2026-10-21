@@ -15,6 +15,17 @@ def stamp(day, hour=12):
 
 
 class BoardTests(unittest.TestCase):
+    def test_large_evidence_pool_stays_below_structured_output_enum_limit(self):
+        source={'messages':[{'evidence_id':'E'+str(n)} for n in range(1200)]}
+        schema=board.board_schema({'synthetic-thread':source},[],self.cfg)
+        def enum_count(value):
+            if isinstance(value,dict):
+                return len(value.get('enum',[]))+sum(enum_count(v) for k,v in value.items() if k!='enum')
+            if isinstance(value,list):
+                return sum(enum_count(v) for v in value)
+            return 0
+        self.assertLess(enum_count(schema),1000)
+
     def test_slack_rate_spacing_is_preserved_per_method(self):
         slack = board.Slack('synthetic', 'user')
         with patch.object(board, 'http_json', return_value={'ok':True}), \
@@ -157,6 +168,37 @@ class BoardTests(unittest.TestCase):
                         + '?thread_ts=' + stamp(1) + '&cid=CTEST',
                 'automationEvidence': [{'channelId': 'CTEST', 'ts': stamp(15)}]}
         self.assertEqual(board.source_references(task), {('CTEST', stamp(1))})
+
+    def test_carried_reply_is_resolved_through_its_actual_root(self):
+        slack = MagicMock()
+        root, reply = stamp(1), stamp(15)
+        def pages(method, params, key='messages'):
+            if method == 'conversations.list':
+                return [{'id':'CTEST'}]
+            if method == 'conversations.history':
+                self.assertNotIn('oldest',params)
+                return [{'ts':root,'reply_count':1,'latest_reply':reply}]
+            self.assertEqual(params['ts'],root)
+            return [{'ts':root,'user':'UTEST0','text':'배너 제작 요청'},
+                    {'ts':reply,'thread_ts':root,'user':'UTEST1','text':'제가 배너 제작을 진행했습니다.'}]
+        slack.pages.side_effect=pages
+        slack.call.return_value={'channel':{'id':'CTEST','is_private':False}}
+        task={'id':'old','status':'진행 중','title':'배너','link':'https://example.slack.com/archives/CTEST/p'+reply.replace('.','')}
+        sources,coverage=board.collect_sources(slack,self.cfg,{'activeTasks':[task]},self.start,self.end)
+        self.assertTrue(coverage['complete'])
+        self.assertIn(reply,sources['CTEST:'+root]['reference_aliases'])
+        self.assertEqual(sum(call.args[0]=='conversations.replies' for call in slack.pages.call_args_list),1)
+
+    def test_manual_snapshot_followups_after_period_are_not_reused_as_earlier_evidence(self):
+        slack=MagicMock()
+        slack.pages.side_effect=lambda method,params,key='messages': [{'id':'CTEST'}] if method=='conversations.list' else []
+        slack.call.return_value={'channel':{'id':'CTEST','is_private':False}}
+        task={'status':'진행 중','title':'배너','link':'https://example.slack.com/archives/CTEST/p'+stamp(19).replace('.','')}
+        sources,coverage=board.collect_sources(slack,self.cfg,{'activeTasks':[task]},self.start,self.end)
+        self.assertEqual(sources,{})
+        self.assertEqual(coverage['referencesAfterCutoffExcluded'],1)
+        self.assertTrue(coverage['complete'])
+        self.assertFalse(any(call.args[0]=='conversations.replies' for call in slack.pages.call_args_list))
         task = {'sourceLinks': ['https://example.slack.com/archives/CTEST/p' + stamp(1).replace('.', '')]}
         self.assertEqual(board.source_references(task), {('CTEST', stamp(1))})
 
