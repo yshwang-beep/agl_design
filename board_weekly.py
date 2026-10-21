@@ -53,6 +53,8 @@ def workboard_error_code(error):
 def http_json(url, token, payload=None, service='Service', retry_read=False):
     data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode()
     headers = {'Authorization': 'Bearer ' + token, 'Accept': 'application/json'}
+    if service == 'Workboard':
+        headers['User-Agent'] = 'AGL-Design-Workboard-Automation/1.0'
     if data is not None:
         headers['Content-Type'] = 'application/json; charset=utf-8'
     for attempt in range(4):

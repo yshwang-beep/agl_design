@@ -15,6 +15,16 @@ def stamp(day, hour=12):
 
 
 class BoardTests(unittest.TestCase):
+    def test_workboard_uses_the_approved_automation_identity_header(self):
+        opener = MagicMock()
+        opener.open.return_value.__enter__.return_value.read.return_value = b'{"ok":true}'
+        with patch.object(board.urllib.request, 'build_opener', return_value=opener):
+            board.http_json('https://example.workers.dev/api/status', 'synthetic', service='Workboard')
+            self.assertEqual(opener.open.call_args.args[0].get_header('User-agent'),
+                             'AGL-Design-Workboard-Automation/1.0')
+            board.http_json('https://slack.com/api/auth.test', 'synthetic', service='Slack')
+            self.assertIsNone(opener.open.call_args.args[0].get_header('User-agent'))
+
     def test_workboard_diagnostics_expose_only_safe_fixed_codes(self):
         for raw, expected in [(b'error code: 1010\n', 'cloudflare_edge_1010'),
                               (b'{"error":"automation_identity_denied"}', 'automation_identity_denied'),
