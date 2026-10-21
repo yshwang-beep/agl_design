@@ -115,6 +115,17 @@ class WeeklyReportTests(unittest.TestCase):
                 self.assertEqual(intro.count(mentions), 1)
                 self.assertNotIn(mentions, report.render([self.item], self.monday, friday))
 
+    def test_monday_greetings_rotate_separately_and_remain_stable_on_retry(self):
+        first = dt.date(2026, 10, 26)
+        messages = [report.monday_encouragement(first + dt.timedelta(weeks=i)) for i in range(6)]
+        self.assertEqual(len(set(messages)), 6)
+        self.assertEqual(report.monday_encouragement(first), messages[0])
+        self.assertEqual(report.monday_encouragement(first + dt.timedelta(weeks=6)), messages[0])
+        self.assertTrue(messages[0].startswith('새로운 한 주가 시작됐습니다.'))
+        start = dt.datetime(2026, 10, 26, tzinfo=report.KST)
+        self.assertIn(messages[0], report.introduction(start, start, first, False))
+        self.assertNotIn(messages[0], report.introduction(start, start, first, True))
+
     def test_length_and_inline_link(self):
         result = report.render([self.item], self.monday, False)
         self.assertIn('|스레드>', result)

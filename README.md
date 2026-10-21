@@ -51,6 +51,9 @@ tokens for both Monday and Friday parent intros and the workboard notice.
   Six approved variants rotate by report week; retries retain the same wording.
   The rotation starts with the approved message on 2026-10-23 and repeats after
   six weeks. Monday intros and workboard notices do not add this Friday greeting.
+- Monday parent intros use a separate set of six start-of-week greetings,
+  beginning with the first approved message on 2026-10-26. They rotate weekly,
+  repeat after six weeks and remain identical on retries of the same report.
 - A manual validation uses the most recent already elapsed nominal report time,
   so a Friday check on Tuesday tests the previous Friday's full reporting period.
 - The runner scans channel root metadata for fresh replies on old threads and

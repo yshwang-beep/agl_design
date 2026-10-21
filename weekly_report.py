@@ -452,6 +452,16 @@ def report_period(now, mode, dry):
     return monday, day, friday, nominal
 
 
+MONDAY_ENCOURAGEMENTS = (
+    '새로운 한 주가 시작됐습니다. 이번 주 디자인 업무와 주요 일정을 공유드립니다.\n함께 우선순위를 맞추며 차근차근 진행해 봐요. 이번 주도 잘 부탁드립니다 🙂',
+    '좋은 월요일입니다. 이번 주 함께 진행할 업무를 정리했습니다.\n일정이나 도움이 필요한 부분은 편하게 나눠주세요. 서로 힘을 보태며 한 주를 시작해 봐요 🙂',
+    '이번 주 디자인 업무와 확인이 필요한 사항을 공유드립니다.\n각자의 일정과 작업 상황을 살펴보며, 무리 없이 함께 조율해 나가면 좋겠습니다 🙂',
+    '주말 잘 보내셨나요? 이번 주 주요 업무와 예정 일정을 안내드립니다.\n미리 확인하고 논의할 부분은 함께 나누며, 여유 있게 한 주를 준비해 봐요 🙂',
+    '새로운 한 주도 잘 부탁드립니다. 이번 주 업무와 이어서 확인할 내용을 정리했습니다.\n변경 사항이나 막히는 부분이 있다면 편하게 공유해 주세요. 함께 방법을 찾아가겠습니다 🙂',
+    '이번 주에도 함께할 디자인 업무를 공유드립니다.\n서로의 작업과 일정을 존중하며 하나씩 진행해 봐요. 좋은 한 주 보내시길 바랍니다 🙂',
+)
+
+
 FRIDAY_ENCOURAGEMENTS = (
     '이번 주도 각자의 자리에서 애써주셔서 감사합니다.\n함께 조율하고 마무리해 주신 덕분에 이번 주도 잘 이어갈 수 있었습니다. 편안한 주말 보내세요 🙂',
     '이번 한 주도 수고 많으셨습니다.\n여러 요청과 피드백 사이에서 함께 고민해 주셔서 감사합니다. 주말에는 잠시 쉬어가세요 🙂',
@@ -468,12 +478,19 @@ def friday_encouragement(day):
     return FRIDAY_ENCOURAGEMENTS[week % len(FRIDAY_ENCOURAGEMENTS)]
 
 
+def monday_encouragement(day):
+    week = (day - dt.date(2026, 10, 26)).days // 7
+    return MONDAY_ENCOURAGEMENTS[week % len(MONDAY_ENCOURAGEMENTS)]
+
+
 def introduction(start, cutoff, day, friday):
     weekday = '금' if friday else '월'
     target = '`#' + CHANNEL_NAME + '`' if CHANNEL_NAME else '<#' + CHANNEL + '>'
     intro = TITLE + ('\n' + GROUP if GROUP else '')
     if friday:
         intro += '\n\n' + friday_encouragement(day)
+    else:
+        intro += '\n\n' + monday_encouragement(day)
     scope = ' 게시글 및 ' if friday else ' 게시글·이전 미완료 후속 및 '
     return (intro + '\n\n*기준일:* ' + day.strftime('%Y.%m.%d') + '(' + weekday + ') KST\n'
         + '*대상:* ' + target + ' ' + start.strftime('%Y.%m.%d') + ('(월)' if friday else '')
