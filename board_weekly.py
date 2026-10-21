@@ -503,7 +503,11 @@ def task_payloads(items, sources, active, cfg, start, end):
             accepted_refs = {(source['channel_id'], source['thread_ts'])}
             accepted_refs.update((source['channel_id'], stamp) for stamp in source.get('reference_aliases', []))
             if not old or not accepted_refs.intersection(source_references(old)) or item['title'].strip() != old['title'].strip():
-                raise Stop('Existing board task is not grounded in the same original thread.')
+                # Never let an AI linkage overwrite another deliverable. Keep
+                # the evidenced item separate; the server preserves the old
+                # unfinished row and its human edits for explicit review.
+                source_id = ''
+                verification.append('기존 업무와의 연결 확인 필요 · 이전 업무 기록 보존')
         title = item['title'].strip()
         if SENSITIVE.search('\n'.join([title, item['dueNote']] + list(fields.values()))):
             raise Stop('Sensitive material detected in board draft.')

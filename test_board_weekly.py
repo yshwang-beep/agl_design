@@ -260,12 +260,11 @@ class BoardTests(unittest.TestCase):
         old = {'id': 'old-task', 'title': self.item['title'], 'link': 'https://example.slack.com/archives/CTEST/p' + stamp(13).replace('.', '')}
         self.assertEqual(self.payload([old])['sourceTaskId'], 'old-task')
         old['link'] = 'https://example.slack.com/archives/CTEST/p' + stamp(1).replace('.', '')
-        with self.assertRaises(board.Stop):
-            self.payload([old])
+        self.assertIsNone(self.payload([old])['sourceTaskId'])
+        self.assertIn('기존 업무와의 연결 확인 필요', self.payload([old])['verification'])
         old['link'] = 'https://example.slack.com/archives/CTEST/p' + stamp(13).replace('.', '')
         self.item['title'] = '별개의 새 산출물'
-        with self.assertRaises(board.Stop):
-            self.payload([old])
+        self.assertIsNone(self.payload([old])['sourceTaskId'])
 
     def test_concise_fields_and_sensitive_sources(self):
         self.item['issue'] = ['첫 항목', '둘째 항목', '셋째 항목', '넷째 항목']
