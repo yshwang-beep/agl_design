@@ -92,7 +92,18 @@ class WeeklyReportTests(unittest.TestCase):
         intro = report.introduction(start, cutoff, cutoff.date(), True)
         self.assertIn(report.GROUP, intro)
         self.assertIn('`#test_design`', intro)
-        self.assertEqual(len([line for line in intro.splitlines() if line]), 6)
+        self.assertEqual(len([line for line in intro.splitlines() if line]), 8)
+
+    def test_friday_encouragement_rotates_weekly_and_stays_stable_on_retry(self):
+        first = dt.date(2026, 10, 23)
+        messages = [report.friday_encouragement(first + dt.timedelta(weeks=i)) for i in range(6)]
+        self.assertEqual(len(set(messages)), 6)
+        self.assertEqual(report.friday_encouragement(first), messages[0])
+        self.assertEqual(report.friday_encouragement(first + dt.timedelta(weeks=6)), messages[0])
+        self.assertTrue(messages[0].startswith('이번 주도 각자의 자리에서 애써주셔서 감사합니다.'))
+        start = dt.datetime(2026, 10, 19, tzinfo=report.KST)
+        self.assertIn(messages[0], report.introduction(start, start, first, True))
+        self.assertNotIn(messages[0], report.introduction(start, start, first, False))
 
     def test_monday_and_friday_mentions_are_in_parent_once(self):
         mentions = '<!subteam^S_TEST> <@U_REVIEWER> <@U_CEO>'

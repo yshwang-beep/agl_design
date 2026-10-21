@@ -47,6 +47,10 @@ tokens for both Monday and Friday parent intros and the workboard notice.
   deadlines, and explicitly completed Monday–Friday work in the fourth section.
 - Both post a short introduction and one thread reply. Configured group/user
   mentions appear once in the parent introduction.
+- Friday parent intros also include a short thank-you/weekend encouragement.
+  Six approved variants rotate by report week; retries retain the same wording.
+  The rotation starts with the approved message on 2026-10-23 and repeats after
+  six weeks. Monday intros and workboard notices do not add this Friday greeting.
 - A manual validation uses the most recent already elapsed nominal report time,
   so a Friday check on Tuesday tests the previous Friday's full reporting period.
 - The runner scans channel root metadata for fresh replies on old threads and

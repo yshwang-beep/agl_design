@@ -452,10 +452,28 @@ def report_period(now, mode, dry):
     return monday, day, friday, nominal
 
 
+FRIDAY_ENCOURAGEMENTS = (
+    '이번 주도 각자의 자리에서 애써주셔서 감사합니다.\n함께 조율하고 마무리해 주신 덕분에 이번 주도 잘 이어갈 수 있었습니다. 편안한 주말 보내세요 🙂',
+    '이번 한 주도 수고 많으셨습니다.\n여러 요청과 피드백 사이에서 함께 고민해 주셔서 감사합니다. 주말에는 잠시 쉬어가세요 🙂',
+    '바쁜 한 주 동안 함께해 주셔서 감사합니다.\n작은 수정부터 큰 작업까지 마음 써주신 모든 분들께 감사드립니다. 여유로운 주말 보내세요 🙂',
+    '이번 주도 서로 도우며 애써주셔서 감사합니다.\n각자의 자리에서 보태주신 노력에 감사드리며, 주말에는 편안히 재충전하시길 바랍니다 🙂',
+    '한 주 동안 정말 수고 많으셨습니다.\n함께 의견을 나누고 조율해 주신 덕분에 든든했습니다. 편안하고 기분 좋은 주말 보내세요 🙂',
+    '이번 주에도 정성을 보태주신 모든 분들께 감사드립니다.\n각자의 속도로 잠시 숨을 고르며, 주말에는 충분히 쉬어가시길 바랍니다 🙂',
+)
+
+
+def friday_encouragement(day):
+    # Calendar weeks give a new variant each week and stable text on retries.
+    week = (day - dt.date(2026, 10, 23)).days // 7
+    return FRIDAY_ENCOURAGEMENTS[week % len(FRIDAY_ENCOURAGEMENTS)]
+
+
 def introduction(start, cutoff, day, friday):
     weekday = '금' if friday else '월'
     target = '`#' + CHANNEL_NAME + '`' if CHANNEL_NAME else '<#' + CHANNEL + '>'
     intro = TITLE + ('\n' + GROUP if GROUP else '')
+    if friday:
+        intro += '\n\n' + friday_encouragement(day)
     scope = ' 게시글 및 ' if friday else ' 게시글·이전 미완료 후속 및 '
     return (intro + '\n\n*기준일:* ' + day.strftime('%Y.%m.%d') + '(' + weekday + ') KST\n'
         + '*대상:* ' + target + ' ' + start.strftime('%Y.%m.%d') + ('(월)' if friday else '')
