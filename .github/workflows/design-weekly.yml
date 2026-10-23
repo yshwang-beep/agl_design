@@ -6,10 +6,14 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Report format to validate
+        description: Report format to validate or publish
         type: choice
         options: [monday, friday]
         default: friday
+      publish:
+        description: Publish the selected report (requires its enabled switch and same-day two-hour window)
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -44,7 +48,10 @@ jobs:
           SLACK_WORKSPACE_URL: ${{ vars.SLACK_WORKSPACE_URL }}
           REPORT_MODE: ${{ inputs.mode || 'auto' }}
           PUBLISH: >-
-            ${{ github.event_name == 'schedule' &&
+            ${{ ((github.event_name == 'schedule' &&
             ((github.event.schedule == '0 0 * * 1' && vars.MONDAY_REPORTS_ENABLED == 'true') ||
-            (github.event.schedule == '0 8 * * 5' && vars.FRIDAY_REPORTS_ENABLED == 'true')) && 'true' || 'false' }}
+            (github.event.schedule == '0 8 * * 5' && vars.FRIDAY_REPORTS_ENABLED == 'true'))) ||
+            (github.event_name == 'workflow_dispatch' && inputs.publish == true &&
+            ((inputs.mode == 'monday' && vars.MONDAY_REPORTS_ENABLED == 'true') ||
+            (inputs.mode == 'friday' && vars.FRIDAY_REPORTS_ENABLED == 'true')))) && 'true' || 'false' }}
         run: python3 weekly_report.py
