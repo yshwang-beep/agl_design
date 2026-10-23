@@ -485,7 +485,9 @@ def reformat_existing(parent, found, dry):
         raise Stop('Reformatted report reply identity could not be verified.')
     actual = verified[0].get('blocks', [])
     if len(actual) != len(blocks) or any(
-        b.get('type') != 'section' or b.get('expand') is not True or b.get('text') != wanted['text']
+        b.get('type') != 'section' or b.get('expand') is not True
+        or b.get('text', {}).get('type') != wanted['text']['type']
+        or b.get('text', {}).get('text') != wanted['text']['text']
         for b, wanted in zip(actual, blocks)
     ):
         raise Stop('Expanded report readback does not match; inspect Slack before retrying.')

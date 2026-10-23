@@ -205,6 +205,17 @@ class WeeklyReportTests(unittest.TestCase):
         self.assertEqual(updated['text'], original['text'])
         self.assertEqual('\n\n'.join(b['text']['text'] for b in update.call_args.args[1]['blocks']), visible)
 
+    def test_reformat_readback_accepts_slack_generated_block_ids_and_text_defaults(self):
+        original = self.legacy_reply()
+        blocks = report.report_blocks(report.table_text(original))
+        returned = [dict(b, block_id='generated-' + str(i), text=dict(b['text'], verbatim=False))
+                    for i, b in enumerate(blocks)]
+        parent = {'ts': '100.000001'}
+        with patch.object(report, 'thread', return_value=[parent, dict(original, blocks=returned)]), \
+             patch.object(report, 'slack') as update:
+            report.reformat_existing(parent, [original], False)
+        update.assert_called_once()
+
     def test_reformat_is_dry_by_default_and_does_not_repeat_completed_update(self):
         original = self.legacy_reply()
         with patch.object(report, 'slack') as update:
