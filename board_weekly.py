@@ -491,9 +491,9 @@ def task_payloads(items, sources, active, cfg, start, end):
             try:
                 due = dt.date.fromisoformat(due_value)
             except ValueError:
-                raise Stop('Invalid board due date.') from None
+                due = None
             from weekly_report import explicit_completion_date
-            if not any(explicit_completion_date(m, due) for m in source['messages']):
+            if due is None or not any(explicit_completion_date(m, due) for m in source['messages']):
                 due_value, due_note = '', '일정 원문 근거 확인 필요'
                 verification.append('명시적 일정 확인 필요')
         fields = {}

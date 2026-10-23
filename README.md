@@ -11,7 +11,9 @@ Slack bot authentication, posting and channel/thread reading have been verified.
 The weekly workflow has separate Monday and Friday publication switches, both off
 by default. Each schedule stays disabled until its own switch is explicitly set
 to `true` after verification of that report.
-Manual workflow runs are always draft validation only; they do not post.
+Manual workflow runs default to draft validation. Explicitly selecting `publish`
+allows posting only when the selected report's publication switch is enabled and
+the runner's same-day, two-hour posting window is still open.
 
 Required repository Secrets:
 
@@ -68,9 +70,11 @@ tokens for both Monday and Friday parent intros and the workboard notice.
   are not downloaded or analyzed; important facts only in attachments require review.
 - Role choices are restricted to users present in source data. A role absent from
   its cited original message becomes `확인 필요`; no substitute person is inferred.
-- Completed rows require positive completion wording, a real cited source, an
-  explicit date expression in that source and the correct Monday/Friday date
-  window. Deadlines, negative completion wording and pending approval fail closed.
+- Completion claims require positive completion wording and a real cited source.
+  Missing or ambiguous completion dates become `확인 필요` without blocking the
+  rest of the report; dates are never inferred from message timestamps or deadlines.
+  Explicit completion dates must fall in the correct Monday/Friday reporting
+  window. Negative completion wording and pending approval are not completion.
 - Only the designated channel is read. Notion board updates, personal briefings
   and ChatGPT Page state synchronization are outside this workflow.
 
@@ -79,6 +83,12 @@ tokens for both Monday and Friday parent intros and the workboard notice.
 GitHub scheduled runs can be delayed; this is not an exact-time SLA. Posting is
 allowed only within two hours of the nominal time on the correct day. Missed
 windows fail closed. No recurring catch-up or automatic cross-day posting.
+
+For recovery after a code fix, start a new manual run of **Weekly design report**
+on the updated branch, select the matching `mode`, and enable `publish`. The
+matching Monday/Friday publication switch must already be enabled, and the run
+must still be inside the normal posting window. Rerunning an old failed job uses
+its original commit and does not pick up the fix. Leave `publish` off for a draft.
 
 Both draft messages are built and validated before the parent is posted. Existing
 reports are detected from their date and title or bot metadata. An existing complete

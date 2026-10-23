@@ -214,6 +214,82 @@ class WeeklyReportTests(unittest.TestCase):
         self.assertIn(task['ts'], result)
         self.assertEqual(fetch.call_count, 6)
 
+    def test_ambiguous_completion_is_visible_without_invented_date(self):
+        self.item.update(section='done', completed_date='2026-10-16',
+                         status='10/16 전체 완료', deadline='10/16 완료',
+                         facts=[dict(kind='completion', source_id='E1')])
+        self.sources['100.000001'][0].update(text='전체 게시 완료했습니다.',
+            ts=str(dt.datetime(2026, 10, 16, 14, tzinfo=report.KST).timestamp()))
+        result = report.ground_uncertain_completions([self.item], self.sources, self.monday, True)
+        report.validate(result, self.sources, self.monday, True)
+        self.assertEqual(result[0]['section'], 'coordination')
+        self.assertEqual(result[0]['completed_date'], '')
+        self.assertEqual(result[0]['deadline'], '확인 필요')
+        self.assertIn('확인 필요', result[0]['status'])
+        rendered = report.render(result, self.monday, True)
+        self.assertNotIn('10/16 전체 완료', rendered)
+        self.assertIn('완료 여부·완료일을 원문에서 확인하지 못함', rendered)
+        self.assertIn('확인 필요', str(report.table_blocks(result, self.monday, True)))
+
+    def test_missing_invalid_or_unsupported_completion_becomes_review(self):
+        for date, text, facts in (
+            ('', '전체 게시 완료', [dict(kind='completion', source_id='E1')]),
+            ('2026-02-30', '전체 게시 완료', [dict(kind='completion', source_id='E1')]),
+            ('2026-10-16', '10/16 제작 완료, 승인 대기', [dict(kind='completion', source_id='E1')]),
+            ('2026-10-16', '10/16 완료 예정', [dict(kind='completion', source_id='E1')]),
+            ('2026-10-16', '제작 요청', []),
+        ):
+            with self.subTest(date=date, text=text):
+                self.item.update(section='done', completed_date=date, facts=facts)
+                self.sources['100.000001'][0]['text'] = text
+                result = report.ground_uncertain_completions([self.item], self.sources, self.monday, True)
+                report.validate(result, self.sources, self.monday, True)
+                self.assertEqual(result[0]['section'], 'coordination')
+                self.assertEqual(result[0]['completed_date'], '')
+
+    def test_verified_completion_is_preserved_and_old_completion_not_reopened(self):
+        self.item.update(section='done', completed_date='2026-10-09',
+                         facts=[dict(kind='completion', source_id='E1')])
+        self.sources['100.000001'][0]['text'] = '10/9 전체 게시 완료'
+        self.assertEqual(report.ground_uncertain_completions([self.item], self.sources, self.monday, True), [])
+        result = report.ground_uncertain_completions([self.item], self.sources, self.monday, False)
+        self.assertEqual(result[0]['section'], 'done')
+        self.assertEqual(result[0]['completed_date'], '2026-10-09')
+
+    def test_completion_fallback_cannot_hide_invalid_references_or_duplicates(self):
+        self.item.update(section='done', completed_date='', facts=[dict(kind='completion', source_id='E_MISSING')])
+        with self.assertRaises(report.Stop):
+            report.ground_uncertain_completions([self.item], self.sources, self.monday, True)
+        self.item['facts'] = [dict(kind='completion', source_id='E1'), dict(kind='completion', source_id='E_MISSING')]
+        with self.assertRaises(report.Stop):
+            report.ground_uncertain_completions([self.item], self.sources, self.monday, True)
+        self.item['facts'] = [dict(kind='completion', source_id='E1')]
+        with self.assertRaises(report.Stop):
+            report.ground_uncertain_completions([self.item, dict(self.item)], self.sources, self.monday, True)
+        self.item['completed_date'] = '2026-10-09'
+        self.sources['100.000001'][0]['text'] = '10/9 전체 게시 완료'
+        with self.assertRaises(report.Stop):
+            report.ground_uncertain_completions([self.item, dict(self.item, section='main')],
+                                                self.sources, self.monday, True)
+
+    def test_main_publishes_report_when_completion_date_is_unknown(self):
+        self.item.update(section='done', completed_date='2026-10-16',
+                         facts=[dict(kind='completion', source_id='E1')])
+        self.sources['100.000001'][0]['text'] = '전체 게시 완료'
+        day = dt.date(2026, 10, 16)
+        cutoff = dt.datetime(2026, 10, 16, 17, tzinfo=report.KST)
+        with patch.dict(report.os.environ, SLACK_BOT_TOKEN='test', OPENAI_API_KEY='test', PUBLISH='true'), \
+             patch.object(report, 'report_period', return_value=(self.monday, day, True, cutoff)), \
+             patch.object(report, 'slack', return_value={'team_id': report.TEAM, 'user_id': report.BOT}), \
+             patch.object(report, 'pages', return_value=[]), \
+             patch.object(report, 'collect', return_value=self.sources), \
+             patch.object(report, 'summarize', return_value=[self.item]) as summarize, \
+             patch.object(report, 'publish') as publish:
+            report.main()
+        summarize.assert_called_once()
+        publish.assert_called_once()
+        self.assertIn('완료 여부·완료일을 원문에서 확인하지 못함', publish.call_args.args[2])
+
     def test_carry_over_source_filtered_as_bot_fails_closed(self):
         root = {'ts': '1000000000.000001', 'text': '기존 요청', 'user': report.BOT}
         history = [root, {'ts': '2000000000.000001', 'text': '이번 주 디자인 업무 현황'}]

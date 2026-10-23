@@ -275,6 +275,42 @@ class BoardTests(unittest.TestCase):
         self.assertEqual(result['due'], '')
         self.assertIn('확인 필요', result['dueNote'])
 
+    def test_ambiguous_completion_and_date_do_not_block_board_draft(self):
+        self.item.update(status='완료', progress='100',
+                         completionFact={'sourceId': '', 'quote': ''})
+        for due in ('확인 필요', '2026-02-30', '2026-10-31'):
+            with self.subTest(due=due):
+                self.item['due'] = due
+                tasks, failures = board.validate_draft(
+                    [self.item], self.sources, [], self.cfg, self.start, self.end)
+                self.assertEqual(failures, [])
+                self.assertEqual(len(tasks), 1)
+                self.assertEqual(tasks[0]['status'], '확인 필요')
+                self.assertEqual(tasks[0]['progress'], '')
+                self.assertEqual(tasks[0]['due'], '')
+                self.assertIn('확인 필요', tasks[0]['dueNote'])
+                self.assertIn('전체 완료의 명시적 근거', tasks[0]['verification'])
+                self.assertEqual(len(tasks[0]['evidence']), 2)
+
+    def test_undated_completion_does_not_invent_a_completion_date(self):
+        self.item.update(status='완료', completionFact={
+            'sourceId': 'E2', 'quote': '전체 게시 완료했습니다.'})
+        self.sources[self.key]['messages'][1]['text'] = '전체 게시 완료했습니다.'
+        tasks, failures = board.validate_draft(
+            [self.item], self.sources, [], self.cfg, self.start, self.end)
+        self.assertEqual(failures, [])
+        self.assertEqual(tasks[0]['status'], '완료')
+        self.assertNotIn('completedDate', tasks[0])
+        self.assertNotIn('completed_date', tasks[0])
+
+    def test_ambiguous_fields_do_not_bypass_unknown_source_evidence(self):
+        self.item.update(status='완료', due='확인 필요', evidenceIds=['UNKNOWN'])
+        tasks, failures = board.validate_draft(
+            [self.item], self.sources, [], self.cfg, self.start, self.end)
+        self.assertEqual(tasks, [])
+        self.assertEqual(len(failures), 1)
+        self.assertIn('another source', failures[0]['failure'])
+
     def test_newer_pending_stage_clears_completion_and_unsupported_progress(self):
         self.item.update(status='완료', progress='100', completionFact={'sourceId':'E1','quote':'전체 게시 완료했습니다.'})
         self.sources[self.key]['messages'][0]['text'] = '전체 게시 완료했습니다.'

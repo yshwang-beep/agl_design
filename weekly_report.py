@@ -25,6 +25,14 @@ class Stop(RuntimeError):
     pass
 
 
+class UncertainCompletion(Stop):
+    """A sourced task can be reported, but its completion cannot be asserted."""
+
+
+class CompletedOutsidePeriod(Stop):
+    """An explicitly dated completion belongs to a different report period."""
+
+
 def request_json(url, token, payload=None, attempt=0):
     headers = {'Authorization': 'Bearer ' + token}
     body = None
@@ -173,6 +181,7 @@ coordination=마감/작업자/요청사항 협의 필요, done=대상 기간에 
 월요일에는 최근14일과 이전 미완료 후속, 전주(월~일)에 완료된 업무만 done.
 context의 completion_start~completion_end 안에 명시적으로 완료된 전체 업무만 done에 넣는다.
 완료 날짜를 메시지 게시일이나 마감일로 추정하지 않는다. 기간이 불명확하면 완료 구역에 넣지 않는다.
+완료 여부나 완료일이 불명확한 업무는 coordination에 남기고 상태에 확인 필요를 표시하며 completed_date는 비운다.
 상시 관리는 done 아님. 착수 미확인도 확인 필요.
 요청자/작업자/완료 판단에 쓴 원문 메시지의 evidence_id를 facts.source_id로 반환한다.
 facts.kind는 requester/worker/completion 중 하나다. source_id는 해당 thread 안의 실제 메시지 번호여야 한다.
@@ -289,23 +298,46 @@ def validate(items, sources, monday, friday):
                 actors.add(message.get('user', ''))
                 if role != '확인 필요' and not any(role == '<@' + actor + '>' for actor in actors if actor):
                     raise Stop('Role actor is not present in the cited source.')
-            if item['section'] == 'done' and fact['kind'] == 'completion' and not explicit_completion(message['text']):
-                raise Stop('Completion source does not contain explicit completion wording.')
             kinds.add(fact['kind'])
         for field in ('requester', 'worker'):
             if item[field] != '확인 필요' and field not in kinds:
                 raise Stop('Role assignment lacks evidence.')
         if item['section'] == 'done':
+            completion = [messages[fact['source_id']] for fact in item['facts'] if fact['kind'] == 'completion']
+            if not completion or not all(explicit_completion(message['text']) for message in completion):
+                raise UncertainCompletion('Completion source does not contain explicit completion wording.')
             try:
                 completed = dt.date.fromisoformat(item['completed_date'])
             except ValueError:
-                raise Stop('Completion date is missing.') from None
+                raise UncertainCompletion('Completion date is missing or invalid.') from None
             first, last = completion_window(monday, friday)
-            if not first <= completed <= last or 'completion' not in kinds:
-                raise Stop('Completion is outside the report completion period or lacks evidence.')
-            if not any(explicit_completion_date(messages[fact['source_id']], completed)
-                       for fact in item['facts'] if fact['kind'] == 'completion'):
-                raise Stop('Completion date is not explicit in the cited source.')
+            if not any(explicit_completion_date(message, completed) for message in completion):
+                raise UncertainCompletion('Completion date is not explicit in the cited source.')
+            if not first <= completed <= last:
+                raise CompletedOutsidePeriod('Completion is outside the report completion period.')
+
+
+def ground_uncertain_completions(items, sources, monday, friday):
+    """Keep uncertain work visible without publishing an invented completion."""
+    if len({item['task'] for item in items}) != len(items):
+        raise Stop('Duplicate task in draft.')
+    result = []
+    for item in items:
+        try:
+            # Check every source and role before softening completion fields.
+            # Unknown/wrong-thread references must still go through draft repair.
+            validate([item], sources, monday, friday)
+        except CompletedOutsidePeriod:
+            continue  # Do not reopen a proven completion from another period.
+        except UncertainCompletion:
+            item['section'] = 'coordination'
+            item['completed_date'] = ''
+            item['status'] = '확인 필요: 완료 여부·완료일을 원문에서 확인하지 못함'
+            # A generated schedule may repeat the unsupported completion date.
+            item['deadline'] = '확인 필요'
+            item['facts'] = [fact for fact in item['facts'] if fact['kind'] != 'completion']
+        result.append(item)
+    return result
 
 
 def ground_uncertain_roles(items, sources):
@@ -535,6 +567,7 @@ def main():
         items = summarize(sources, context)
         ground_uncertain_roles(items, sources)
         try:
+            items = ground_uncertain_completions(items, sources, monday, friday)
             validate(items, sources, monday, friday)
             detail = render(items, monday, friday)
             blocks = table_blocks(items, monday, friday)
