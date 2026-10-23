@@ -419,6 +419,14 @@ class WeeklyReportTests(unittest.TestCase):
             report.request_json('https://slack.com/api/chat.postMessage', 'test', {})
         self.assertEqual(call.call_count, 1)
 
+    def test_update_diagnostic_reports_only_allowlisted_error_code(self):
+        with patch.dict(report.os.environ, SLACK_BOT_TOKEN='test'), \
+             patch.object(report, 'request_json', return_value={
+                 'ok': False, 'error': 'block_mismatch', 'private_detail': 'not for logs'}), \
+             self.assertRaises(report.Stop) as stopped:
+            report.slack('chat.update', {}, write=True)
+        self.assertEqual(str(stopped.exception), 'chat.update: block_mismatch')
+
 
 if __name__ == '__main__':
     unittest.main()
