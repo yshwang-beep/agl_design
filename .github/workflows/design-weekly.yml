@@ -14,6 +14,10 @@ on:
         description: Publish the selected report (requires its enabled switch and same-day two-hour window)
         type: boolean
         default: false
+      reformat_existing:
+        description: Reformat the selected date's existing reply as expanded text without changing report facts
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -47,6 +51,7 @@ jobs:
           SLACK_GROUP_MENTION: ${{ vars.SLACK_GROUP_MENTION }}
           SLACK_WORKSPACE_URL: ${{ vars.SLACK_WORKSPACE_URL }}
           REPORT_MODE: ${{ inputs.mode || 'auto' }}
+          REFORMAT_EXISTING: ${{ inputs.reformat_existing == true && 'true' || 'false' }}
           PUBLISH: >-
             ${{ ((github.event_name == 'schedule' &&
             ((github.event.schedule == '0 0 * * 1' && vars.MONDAY_REPORTS_ENABLED == 'true') ||
