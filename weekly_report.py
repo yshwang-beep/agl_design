@@ -83,12 +83,11 @@ def slack(method, params=None, write=False):
         url += '?' + urllib.parse.urlencode(params or {})
     result = request_json(url, os.environ['SLACK_BOT_TOKEN'], params if write else None)
     if not result.get('ok'):
-        allowed = {'missing_scope', 'not_in_channel', 'invalid_auth', 'token_revoked', 'ratelimited',
-                   'channel_not_found', 'invalid_blocks', 'invalid_blocks_format', 'block_mismatch',
-                   'as_user_not_supported', 'cant_update_message', 'edit_window_closed',
-                   'message_not_found', 'invalid_arguments'}
         reason = result.get('error')
-        raise Stop(method + ': ' + (reason if reason in allowed else 'request rejected'))
+        # Slack's error field is a machine-readable code. Never log response
+        # metadata, messages or unexpected free-form error content.
+        safe_reason = reason if isinstance(reason, str) and re.fullmatch(r'[a-z][a-z0-9_]{0,63}', reason) else 'request rejected'
+        raise Stop(method + ': ' + safe_reason)
     return result
 
 
