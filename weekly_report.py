@@ -476,7 +476,9 @@ def reformat_existing(parent, found, dry):
         print('PASS: Existing report format validated. Slack update disabled.')
         return
     # Update the original reply in place. Do not create a new report or reply.
-    slack('chat.update', {'channel': CHANNEL, 'ts': message['ts'], 'text': detail,
+    # chat.update caps new fallback text at 4,000 characters. Retain the original
+    # fallback (same facts/links) and replace only the visible blocks.
+    slack('chat.update', {'channel': CHANNEL, 'ts': message['ts'],
                          'blocks': blocks, 'attachments': [], 'as_user': True}, write=True)
     verified = details(thread(parent['ts'], str(time.time())))
     if len(verified) != 1 or verified[0].get('ts') != message['ts']:

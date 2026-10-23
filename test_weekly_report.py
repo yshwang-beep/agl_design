@@ -183,13 +183,27 @@ class WeeklyReportTests(unittest.TestCase):
         payload = update.call_args.args[1]
         self.assertEqual(payload['ts'], original['ts'])
         self.assertEqual(payload['attachments'], [])
-        self.assertIn('기존 업무', payload['text'])
-        self.assertIn('<@UWORKER>', payload['text'])
-        self.assertIn('10/16', payload['text'])
-        self.assertIn('일정 확인 필요', payload['text'])
-        self.assertIn('|스레드>', payload['text'])
-        self.assertIn('④ 이번 주 완료 업무', payload['text'])
+        self.assertNotIn('text', payload)  # Retain fallback; chat.update has a 4,000-character cap.
+        visible = '\n\n'.join(b['text']['text'] for b in payload['blocks'])
+        self.assertIn('기존 업무', visible)
+        self.assertIn('<@UWORKER>', visible)
+        self.assertIn('10/16', visible)
+        self.assertIn('일정 확인 필요', visible)
+        self.assertIn('|스레드>', visible)
+        self.assertIn('④ 이번 주 완료 업무', visible)
         self.assertTrue(all(b['expand'] is True and b['type'] == 'section' for b in payload['blocks']))
+
+    def test_long_existing_reply_changes_layout_without_resubmitting_long_fallback(self):
+        original = self.legacy_reply()
+        original['text'] = '원본' * 2000
+        visible = report.table_text(original)
+        updated = dict(original, blocks=report.report_blocks(visible))
+        parent = {'ts': '100.000001'}
+        with patch.object(report, 'thread', return_value=[parent, updated]), patch.object(report, 'slack') as update:
+            report.reformat_existing(parent, [original], False)
+        self.assertNotIn('text', update.call_args.args[1])
+        self.assertEqual(updated['text'], original['text'])
+        self.assertEqual('\n\n'.join(b['text']['text'] for b in update.call_args.args[1]['blocks']), visible)
 
     def test_reformat_is_dry_by_default_and_does_not_repeat_completed_update(self):
         original = self.legacy_reply()
