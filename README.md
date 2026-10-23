@@ -49,6 +49,8 @@ tokens for both Monday and Friday parent intros and the workboard notice.
   deadlines, and explicitly completed Monday–Friday work in the fourth section.
 - Both post a short introduction and one thread reply. Configured group/user
   mentions appear once in the parent introduction.
+- Detail replies use ordinary section text with `expand: true`, so the full report
+  stays selectable in the thread without the native table's separate viewport.
 - Friday parent intros also include a short thank-you/weekend encouragement.
   Six approved variants rotate by report week; retries retain the same wording.
   The rotation starts with the approved message on 2026-10-23 and repeats after
@@ -89,6 +91,10 @@ on the updated branch, select the matching `mode`, and enable `publish`. The
 matching Monday/Friday publication switch must already be enabled, and the run
 must still be inside the normal posting window. Rerunning an old failed job uses
 its original commit and does not pick up the fix. Leave `publish` off for a draft.
+To change only the layout of the selected date's existing table reply, also select
+`reformat_existing`. This updates that original bot reply in place, preserving its
+facts and source links without another AI summary or a duplicate reply. Leaving
+`publish` off validates the conversion without writing to Slack.
 
 Both draft messages are built and validated before the parent is posted. Existing
 reports are detected from their date and title or bot metadata. An existing complete

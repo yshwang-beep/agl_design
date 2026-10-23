@@ -391,13 +391,14 @@ def render(items, monday, friday):
     parts = []
     for section, heading in headings(monday, friday):
         rows = [i for i in items if i['section'] == section]
-        part = '*' + heading + '*\n'
+        part = '*' + heading + '*\n\n'
         if rows:
-            part += '| 업무 | 요청자 → 작업자 | 마감·일정 | 상태·확인 사항 |\n| --- | --- | --- | --- |\n'
+            cards = []
             for item in rows:
                 link = WORKSPACE + '/archives/' + CHANNEL + '/p' + item['thread_ts'].replace('.', '')
-                part += '| ' + ' | '.join([cell(item['task']), cell(item['requester']) + ' → ' + cell(item['worker']),
-                    cell(item['deadline']), cell(item['status']) + ' <' + link + '|스레드>']) + ' |\n'
+                cards.append(task_text(cell(item['task']), cell(item['requester']) + ' → ' + cell(item['worker']),
+                                       cell(item['deadline']), cell(item['status']) + ' <' + link + '|스레드>'))
+            part += '\n\n'.join(cards)
         else:
             part += '해당 없음\n'
         parts.append(part)
@@ -407,37 +408,84 @@ def render(items, monday, friday):
     return draft
 
 
-def table_blocks(items, monday, friday):
-    if not items:
-        return None
-    def rich(value, bold=False, link=None):
-        elements = []
-        for part in re.split(r'(<@U[A-Z0-9]+>)', value):
-            if not part:
-                continue
-            if re.fullmatch(r'<@U[A-Z0-9]+>', part):
-                elements.append({'type': 'user', 'user_id': part[2:-1]})
-            else:
-                element = {'type': 'text', 'text': part}
-                if bold:
-                    element['style'] = {'bold': True}
-                elements.append(element)
-        if link:
-            elements.extend([{'type': 'text', 'text': ' '}, {'type': 'link', 'url': link, 'text': '스레드'}])
-        return {'type': 'rich_text', 'elements': [{'type': 'rich_text_section', 'elements': elements or [{'type': 'text', 'text': ' '}]}]}
-    rows = [[rich(c, bold=True) for c in ('업무', '요청자 → 작업자', '마감·일정', '상태·확인 사항')]]
-    for section, heading in headings(monday, friday):
-        rows.append([rich(heading, bold=True), rich(' '), rich(' '), rich(' ')])
-        selected = [item for item in items if item['section'] == section]
-        if not selected:
-            rows.append([rich('해당 없음'), rich(' '), rich(' '), rich(' ')])
-        for item in selected:
-            link = WORKSPACE + '/archives/' + CHANNEL + '/p' + item['thread_ts'].replace('.', '')
-            rows.append([rich(cell(item['task'])), rich(cell(item['requester']) + ' → ' + cell(item['worker'])),
-                         rich(cell(item['deadline'])), rich(cell(item['status']), link=link)])
-    if len(rows) > 100:
-        raise Stop('Native Slack table exceeds row limit.')
-    return [{'type': 'table', 'column_settings': [{'is_wrapped': True}] * 4, 'rows': rows}]
+def task_text(task, roles, deadline, status):
+    return '*' + task + '*\n요청자 → 작업자: ' + roles + '\n마감·일정: ' + deadline + '\n상태·확인: ' + status
+
+
+def report_blocks(detail):
+    """Ordinary selectable text; no table viewport or collapsed long sections."""
+    blocks = []
+    for paragraph in detail.split('\n\n'):
+        if not paragraph.strip():
+            continue
+        # Slack sections accept at most 3,000 characters. Splitting is lossless.
+        for offset in range(0, len(paragraph), 3000):
+            blocks.append({'type': 'section', 'expand': True,
+                           'text': {'type': 'mrkdwn', 'text': paragraph[offset:offset + 3000]}})
+    if len(blocks) > 50:
+        raise Stop('Expanded report exceeds Slack block limit.')
+    return blocks
+
+
+def table_text(message):
+    """Convert our existing table to text without collecting or changing facts."""
+    tables = [b for b in message.get('blocks', []) if b.get('type') == 'table']
+    if len(tables) != 1:
+        raise Stop('Expected exactly one existing report table.')
+
+    def rich_text(node):
+        kind = node.get('type')
+        if kind in {'text', 'raw_text'}:
+            return node.get('text', '')
+        if kind == 'user':
+            return '<@' + node['user_id'] + '>'
+        if kind == 'link':
+            return '<' + node['url'] + '|' + node.get('text', node['url']) + '>'
+        if kind in {'rich_text', 'rich_text_section'}:
+            return ''.join(rich_text(child) for child in node.get('elements', []))
+        raise Stop('Unsupported existing report cell; no content discarded.')
+
+    rows = tables[0].get('rows', [])
+    if not rows or [rich_text(c).strip() for c in rows[0]] != ['업무', '요청자 → 작업자', '마감·일정', '상태·확인 사항']:
+        raise Stop('Existing report table headers do not match.')
+    paragraphs = []
+    for row in rows[1:]:
+        if len(row) != 4:
+            raise Stop('Existing report row does not have four cells.')
+        task, roles, deadline, status = [rich_text(c).strip() for c in row]
+        if not any((roles, deadline, status)):
+            paragraphs.append('*' + task + '*' if re.match(r'^[①②③④]', task) else task)
+        else:
+            paragraphs.append(task_text(task, roles, deadline, status))
+    return '\n\n'.join(paragraphs)
+
+
+def reformat_existing(parent, found, dry):
+    if len(found) != 1 or found[0].get('user') != BOT:
+        raise Stop('Expected exactly one detail reply from the configured bot.')
+    message = found[0]
+    old_blocks = message.get('blocks', [])
+    if old_blocks and all(b.get('type') == 'section' and b.get('expand') is True for b in old_blocks):
+        print('PASS: Existing report already uses expanded text. No update needed.')
+        return
+    detail = table_text(message)
+    blocks = report_blocks(detail)
+    if dry:
+        print('PASS: Existing report format validated. Slack update disabled.')
+        return
+    # Update the original reply in place. Do not create a new report or reply.
+    slack('chat.update', {'channel': CHANNEL, 'ts': message['ts'], 'text': detail,
+                         'blocks': blocks, 'attachments': [], 'as_user': True}, write=True)
+    verified = details(thread(parent['ts'], str(time.time())))
+    if len(verified) != 1 or verified[0].get('ts') != message['ts']:
+        raise Stop('Reformatted report reply identity could not be verified.')
+    actual = verified[0].get('blocks', [])
+    if len(actual) != len(blocks) or any(
+        b.get('type') != 'section' or b.get('expand') is not True or b.get('text') != wanted['text']
+        for b, wanted in zip(actual, blocks)
+    ):
+        raise Stop('Expanded report readback does not match; inspect Slack before retrying.')
+    print('PASS: Original reply updated and expanded text verified. No duplicate sent.')
 
 
 def publish(parent, intro, detail, day, blocks=None):
@@ -549,10 +597,16 @@ def main():
     history = pages('conversations.history', {'channel': CHANNEL, 'latest': str(now.timestamp()), 'include_all_metadata': 'true'})
     roots = find_roots(history, day)
     parent = roots[0] if roots else None
+    reformat = os.environ.get('REFORMAT_EXISTING', 'false') == 'true'
+    if reformat and not parent:
+        raise Stop('No report exists for the selected date; no format update attempted.')
     if parent:
         found = details(thread(parent['ts'], str(now.timestamp())))
         if len(found) > 1:
             raise Stop('Multiple existing detail replies.')
+        if reformat:
+            reformat_existing(parent, found, dry)
+            return
         if found and not dry:
             print('Report already complete. No duplicate sent.')
             return
@@ -570,7 +624,7 @@ def main():
             items = ground_uncertain_completions(items, sources, monday, friday)
             validate(items, sources, monday, friday)
             detail = render(items, monday, friday)
-            blocks = table_blocks(items, monday, friday)
+            blocks = report_blocks(detail)
             break
         except Stop as error:
             if attempt:

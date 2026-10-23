@@ -63,9 +63,8 @@ class WeeklyReportTests(unittest.TestCase):
         self.assertIn('① 이번 주 주요 업무 ㅣ 10/12~10/18', result)
         self.assertNotIn('전주 완료', result)
         self.assertIn('이미지', result)
-        blocks = report.table_blocks([self.item], self.monday, True)
-        headings = [r[0]['elements'][0]['elements'][0].get('text', '') for r in blocks[0]['rows']]
-        self.assertTrue(any(h.startswith('④ 이번 주 완료 업무') for h in headings))
+        blocks = report.report_blocks(result)
+        self.assertTrue(any(b['text']['text'].startswith('*④ 이번 주 완료 업무') for b in blocks))
 
     def test_manual_checks_use_last_complete_report_window(self):
         now = dt.datetime(2026, 10, 20, 10, tzinfo=report.KST)
@@ -143,14 +142,93 @@ class WeeklyReportTests(unittest.TestCase):
         with self.assertRaises(report.Stop):
             report.validate([self.item], self.sources, self.monday, False)
 
-    def test_native_slack_table_places_link_in_last_cell(self):
+    def test_report_uses_expanded_selectable_text_instead_of_table_viewport(self):
         self.item['worker'] = '<@UWORKER>'
-        blocks = report.table_blocks([self.item], self.monday, False)
-        self.assertEqual(blocks[0]['type'], 'table')
-        row = blocks[0]['rows'][2]
-        self.assertEqual(row[1]['elements'][0]['elements'][-1], {'type': 'user', 'user_id': 'UWORKER'})
-        self.assertEqual(row[3]['elements'][0]['elements'][-1]['text'], '스레드')
-        self.assertEqual(len(row), 4)
+        text = report.render([self.item], self.monday, False)
+        blocks = report.report_blocks(text)
+        self.assertTrue(all(b['type'] == 'section' and b['expand'] is True for b in blocks))
+        content = '\n\n'.join(b['text']['text'] for b in blocks)
+        self.assertIn('<@UWORKER>', content)
+        self.assertIn('요청자 → 작업자:', content)
+        self.assertIn('|스레드>', content)
+        self.assertNotIn('| --- |', content)
+        self.assertTrue(all(len(b['text']['text']) <= 3000 for b in blocks))
+
+    def legacy_reply(self):
+        def rich(text):
+            return {'type': 'rich_text', 'elements': [{'type': 'rich_text_section',
+                    'elements': [{'type': 'text', 'text': text}]}]}
+        roles = rich('확인 필요 → ')
+        roles['elements'][0]['elements'].append({'type': 'user', 'user_id': 'UWORKER'})
+        status = rich('일정 확인 필요')
+        status['elements'][0]['elements'].append({'type': 'link', 'url': report.WORKSPACE + '/archives/C_TEST/p100000001', 'text': '스레드'})
+        rows = [[rich(t) for t in ('업무', '요청자 → 작업자', '마감·일정', '상태·확인 사항')],
+                [rich('① 이번 주 주요 업무'), rich(' '), rich(' '), rich(' ')],
+                [rich('기존 업무'), roles, rich('10/16'), status],
+                [rich('④ 이번 주 완료 업무'), rich(' '), rich(' '), rich(' ')],
+                [rich('해당 없음'), rich(' '), rich(' '), rich(' ')]]
+        return {'ts': '101.000001', 'user': report.BOT, 'text': '기존 표',
+                'blocks': [{'type': 'table', 'rows': rows}]}
+
+    def test_reformat_updates_same_reply_preserving_facts_mentions_and_links(self):
+        parent = {'ts': '100.000001'}
+        original = self.legacy_reply()
+        text = report.table_text(original)
+        blocks = report.report_blocks(text)
+        verified = dict(original, text=text, blocks=blocks)
+        with patch.object(report, 'thread', return_value=[parent, verified]), patch.object(report, 'slack') as update:
+            report.reformat_existing(parent, [original], False)
+        update.assert_called_once()
+        self.assertEqual(update.call_args.args[0], 'chat.update')
+        payload = update.call_args.args[1]
+        self.assertEqual(payload['ts'], original['ts'])
+        self.assertEqual(payload['attachments'], [])
+        self.assertIn('기존 업무', payload['text'])
+        self.assertIn('<@UWORKER>', payload['text'])
+        self.assertIn('10/16', payload['text'])
+        self.assertIn('일정 확인 필요', payload['text'])
+        self.assertIn('|스레드>', payload['text'])
+        self.assertIn('④ 이번 주 완료 업무', payload['text'])
+        self.assertTrue(all(b['expand'] is True and b['type'] == 'section' for b in payload['blocks']))
+
+    def test_reformat_is_dry_by_default_and_does_not_repeat_completed_update(self):
+        original = self.legacy_reply()
+        with patch.object(report, 'slack') as update:
+            report.reformat_existing({'ts': '100.000001'}, [original], True)
+        update.assert_not_called()
+        original['blocks'] = report.report_blocks(report.table_text(original))
+        with patch.object(report, 'slack') as update:
+            report.reformat_existing({'ts': '100.000001'}, [original], False)
+        update.assert_not_called()
+
+    def test_reformat_refuses_unknown_content_and_other_authors(self):
+        original = self.legacy_reply()
+        original['user'] = 'UOTHER'
+        with patch.object(report, 'slack') as update, self.assertRaises(report.Stop):
+            report.reformat_existing({'ts': '100.000001'}, [original], False)
+        update.assert_not_called()
+        original['user'] = report.BOT
+        original['blocks'][0]['rows'][2][0] = {'type': 'image', 'image_url': 'https://example.com/image'}
+        with self.assertRaises(report.Stop):
+            report.table_text(original)
+
+    def test_reformat_path_does_not_collect_or_regenerate_report(self):
+        original = self.legacy_reply()
+        parent = {'ts': '100.000001', 'text': '이번 주 디자인 업무 현황 기준일 2026.10.16'}
+        cutoff = dt.datetime(2026, 10, 16, 17, tzinfo=report.KST)
+        with patch.dict(report.os.environ, SLACK_BOT_TOKEN='test', OPENAI_API_KEY='test',
+                        PUBLISH='true', REFORMAT_EXISTING='true'), \
+             patch.object(report, 'report_period', return_value=(self.monday, cutoff.date(), True, cutoff)), \
+             patch.object(report, 'slack', return_value={'team_id': report.TEAM, 'user_id': report.BOT}), \
+             patch.object(report, 'pages', return_value=[parent]), \
+             patch.object(report, 'thread', return_value=[parent, original]), \
+             patch.object(report, 'collect') as collect, \
+             patch.object(report, 'summarize') as summarize, \
+             patch.object(report, 'reformat_existing') as reformat:
+            report.main()
+        reformat.assert_called_once_with(parent, [original], False)
+        collect.assert_not_called()
+        summarize.assert_not_called()
 
     def test_unsupported_role_becomes_confirmation_required(self):
         self.item['worker'] = '<@UWRONG>'
@@ -229,7 +307,7 @@ class WeeklyReportTests(unittest.TestCase):
         rendered = report.render(result, self.monday, True)
         self.assertNotIn('10/16 전체 완료', rendered)
         self.assertIn('완료 여부·완료일을 원문에서 확인하지 못함', rendered)
-        self.assertIn('확인 필요', str(report.table_blocks(result, self.monday, True)))
+        self.assertIn('확인 필요', str(report.report_blocks(rendered)))
 
     def test_missing_invalid_or_unsupported_completion_becomes_review(self):
         for date, text, facts in (
