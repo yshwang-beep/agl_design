@@ -10,7 +10,7 @@ import urllib.parse
 import urllib.request
 from zoneinfo import ZoneInfo
 
-from weekly_report import Stop, explicit_completion
+from weekly_report import Stop, explicit_completion, weekly_completion
 
 KST = ZoneInfo('Asia/Seoul')
 STATUSES = ['진행 중', '진행 예정', '방향 검토', '승인 대기', '자료 대기', '검토 대기',
@@ -259,7 +259,9 @@ def collect_sources(slack, cfg, snapshot, start, end):
                 raise Stop('Invalid source timestamp.')
             if (float(root['ts']) >= start.timestamp() or float(root.get('latest_reply', '0')) >= start.timestamp()
                     or (channel_id, root['ts']) in carry):
-                candidates[root['ts']] = root
+                canonical = root.get('thread_ts', root['ts'])
+                candidates[canonical] = next((m for m in history if m['ts'] == canonical),
+                                             {'ts': canonical, 'reply_count': 1})
         aliases, thread_cache = {}, {}
         history_by_id = {m['ts']:m for m in history}
         def load_thread(stamp):
@@ -272,7 +274,7 @@ def collect_sources(slack, cfg, snapshot, start, end):
             return thread_cache[stamp]
         for ch, stamp in carry:
             if ch == channel_id:
-                actual = stamp
+                actual = history_by_id.get(stamp, {}).get('thread_ts', stamp)
                 if stamp not in history_by_id:
                     # Channel history excludes ordinary thread replies. Locate
                     # the exact reply inside eligible roots instead of asking
@@ -337,7 +339,11 @@ BOARD_RULES = '''디자인팀 주간 업무판의 한국어 초안을 작성한�
 sourceTaskId는 같은 기존 산출물일 때만 기존 id를 선택하고 기존 제목을 그대로 유지한다. 별개 신규 산출물은 빈 문자열로 둔다. 제목만 같다고 연결하지 않는다.
 owners는 명시적 담당/직접 작업 요청 또는 본인의 작업 선언으로만 정한다. 단순 멘션,cc,참고,반응은 역할 근거가 아니다.
 requester도 직접 요청한 사람만. 불명확한 owners는 [],requester는 빈 문자열. configured designers 외 사람은 owners에 넣지 않는다.
-status는 제작/수정/전달과 전체 승인/게시/입고를 구분한다. 후속 검토/승인이 남으면 완료가 아니다.
+completionScope는 design/publication/production/unknown 중 실제 행의 범위다. 디자인 산출물과 MD 게시/입고는 별개다.
+최종 디자인/HTML 전달 완료는 design 범위 완료다. 이후 상품 셋팅 확인만으로 디자인 미완료로 바꾸지 않는다.
+1차 시안/실제 디자인 수정 대기는 최종 완료가 아니다. 부분 산출물은 제목과 issue에 범위를 명시한다.
+원문부터 마지막 댓글까지 대조하고 최신 명시적 담당 변경과 합의 일정을 적용한다. 공동 담당자는 모두 표시한다.
+주차/산출물마다 담당·마감이 다르면 분리한다. 일정 공지와 실제 제작 요청은 동일 업무로 합친다.
 progress는 원문의 명시적 0~100 숫자만, 또는 명시적으로 완료된 산출물은100. 추정은 빈 문자열이다.
 due는 명시적 날짜 YYYY-MM-DD만, 불명확하면 빈 문자열과 dueNote에 확인 필요. 없는 날짜·역할·업무를 만들지 않는다.
 issue 최대3줄,next 최대2줄,decision 최대2줄의 짧은 항목 배열이다. 각 항목은120자 이내이고중복을피한다.
@@ -364,6 +370,7 @@ def board_schema(sources, active, cfg):
         'collaborators': {'type': 'array', 'items': {'type': 'string', 'enum': people}},
         'chapters': {'type': 'array', 'items': {'type': 'string', 'enum': ['온라인', '오프라인', '공통', '확인 필요']}},
         'status': {'type': 'string', 'enum': STATUSES},
+        'completionScope': {'type': 'string', 'enum': ['design', 'publication', 'production', 'unknown']},
         # Message references are validated against the actual source after the
         # response. Enumerating them twice can exceed the provider schema limit.
         'evidenceIds': {'type': 'array', 'items': string},
@@ -387,7 +394,7 @@ def summarize(sources, active, cfg, period, repair=None):
         raise Stop('Model input exceeds budget; no silent truncation.')
     result = http_json('https://api.openai.com/v1/responses', os.environ['OPENAI_API_KEY'], {
         'model': os.environ.get('OPENAI_MODEL', 'gpt-4.1'), 'store': False,
-        'instructions': BOARD_RULES + '\n' + cfg.get('source_policy', '') + '\n' + os.environ.get('REPORT_POLICY', ''),
+        'instructions': cfg.get('source_policy', '') + '\n' + os.environ.get('REPORT_POLICY', '') + '\n' + BOARD_RULES,
         'input': json.dumps(data, ensure_ascii=False), 'max_output_tokens': 16000,
         'text': {'format': {'type': 'json_schema', 'name': 'design_board', 'strict': True,
                            'schema': board_schema(sources, active, cfg)}}}, 'OpenAI')
@@ -407,7 +414,7 @@ def verified_quote(fact, messages):
     return message if message and quote.strip() and quote in message['text'] else None
 
 
-def direct_role(fact, messages):
+def direct_role(fact, messages, directory=None):
     message = verified_quote(fact, messages)
     if not message:
         return False
@@ -415,18 +422,25 @@ def direct_role(fact, messages):
     if re.search(r'\bcc\b|참고|공유만|단순\s*멘션', quote, re.I):
         return False
     mentioned = bool(re.search(r'<@' + re.escape(actor) + r'(?:\|[^>]+)?>', quote))
+    if directory and not mentioned:
+        person = next((p for p in directory if p['id'] == actor), None)
+        name = person.get('name', '').split('_')[0] if person else ''
+        for alias in {name, name[1:] if len(name) == 3 else name}:
+            if len(alias) >= 2 and sum(p['name'].split('_')[0].endswith(alias) for p in directory) == 1:
+                mentioned |= bool(re.search(re.escape(alias) + r'\s*님', quote))
     if kind == 'requester':
         return bool((message.get('user') == actor and re.search(r'부탁드립니다|요청드립니다|해\s*주세요|가능할까요', quote))
                     or (mentioned and re.search(r'요청자\s*[:：]', quote)))
-    if mentioned and re.search(r'담당|작업|제작|수정|진행|디자인', quote) and re.search(r'담당|부탁|요청|해\s*주세요|맡', quote):
+    if mentioned and re.search(r'담당|작업|제작|수정|진행|디자인', quote) and re.search(r'담당|부탁|요청|해\s*주세요|맡|함께|저와|작업\s*예정', quote):
         return True
-    return bool(message.get('user') == actor and re.search(r'제가|저는|내가|본인', quote)
+    return bool(message.get('user') == actor and re.search(r'제가|저는|저와|내가|본인', quote)
                 and re.search(r'담당|작업|제작|수정|진행|디자인', quote)
                 and not re.search(r'부탁|요청', quote))
 
 
 def task_payloads(items, sources, active, cfg, start, end):
-    people = {p['id']: p['name'] for p in cfg['designers'] + cfg.get('collaborators', [])}
+    directory = cfg['designers'] + cfg.get('collaborators', [])
+    people = {p['id']: p['name'] for p in directory}
     designers = {p['id'] for p in cfg['designers']}
     existing = {t['id']: t for t in active}
     payload, seen = [], set()
@@ -454,22 +468,26 @@ def task_payloads(items, sources, active, cfg, start, end):
             raise Stop('Board task lacks reporting-period evidence.')
         owners = []
         for owner in item['owners']:
-            if owner in designers and any(f['kind'] == 'owner' and f['actor'] == owner and direct_role(f, messages)
+            if owner in designers and any(f['kind'] == 'owner' and f['actor'] == owner and direct_role(f, messages, directory)
                                           for f in item['roleFacts']):
                 owners.append(owner)
         requester = item['requester']
-        if requester and not any(f['kind'] == 'requester' and f['actor'] == requester and direct_role(f, messages)
+        if requester and not any(f['kind'] == 'requester' and f['actor'] == requester and direct_role(f, messages, directory)
                                   for f in item['roleFacts']):
             requester = ''
         completion = verified_quote(item['completionFact'], messages)
         if item['status'] not in STATUSES:
             raise Stop('Invalid board status.')
+        is_design = item.get('completionScope') == 'design'
+        completion_check = weekly_completion if is_design else explicit_completion
         completion_valid = bool(completion and start.timestamp() <= float(completion['ts']) < end.timestamp()
-            and explicit_completion(item['completionFact']['quote']) and explicit_completion(completion['text']))
+            and completion_check(item['completionFact']['quote']) and completion_check(completion['text']))
         verification = []
         status = item['status']
+        pending_pattern = (r'(?:디자인|시안|HTML).{0,15}(?:수정|승인|검토)\s*(?:대기|필요|예정|중)|디자인\s*미완료'
+                           if is_design else r'(?:승인|검토|게시|입고|전달)\s*(?:대기|필요|예정|중)|미완료|완료되지')
         pending = bool(completion and any(float(m['ts']) >= float(completion['ts'])
-                and re.search(r'(?:승인|검토|게시|입고|전달)\s*(?:대기|필요|예정|중)|미완료|완료되지', m['text'])
+                and re.search(pending_pattern, m['text'])
                 for m in source['messages']))
         if status == '완료' and (not completion_valid or pending):
             status = '확인 필요'
@@ -522,7 +540,7 @@ def task_payloads(items, sources, active, cfg, start, end):
             'owner': ', '.join(people[o] for o in dict.fromkeys(owners)) or '확인 필요',
             'requester': people.get(requester, '확인 필요'), 'status': status,
             'chapter': ', '.join(chapters), 'collaborators': ', '.join(people[c] for c in dict.fromkeys(item['collaborators'])
-                if c in people and any(f['kind'] == 'collaborator' and f['actor'] == c and direct_role(f, messages) for f in item['roleFacts'])),
+                if c in people and any(f['kind'] == 'collaborator' and f['actor'] == c and direct_role(f, messages, directory) for f in item['roleFacts'])),
             'due': due_value, 'dueNote': due_note, 'progress': progress, 'reviewed': 'no',
             'verification': ' · '.join(verification),
             'link': cfg['workspace_url'] + '/archives/' + source['channel_id'] + '/p' + source['thread_ts'].replace('.', ''),

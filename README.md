@@ -47,10 +47,10 @@ tokens for both Monday and Friday parent intros and the workboard notice.
   sources followed up, previous Monday–Sunday explicit completions.
 - Friday 17:00 Asia/Seoul: current-week relevant open work, including weekend
   deadlines, and explicitly completed Monday–Friday work in the fourth section.
-- Both post a short introduction and one thread reply. Configured group/user
-  mentions appear once in the parent introduction.
-- Detail replies use ordinary section text with `expand: true`, so the full report
-  stays selectable in the thread without the native table's separate viewport.
+- Both post one introduction and consecutive native table replies, with at most
+  three task rows per table. This preserves the four-column format while keeping
+  each table below the long-table preview. Slack provides no forced table height
+  or expand flag. Configured group/user mentions appear once in the parent.
 - Friday parent intros also include a short thank-you/weekend encouragement.
   Six approved variants rotate by report week; retries retain the same wording.
   The rotation starts with the approved message on 2026-10-23 and repeats after
@@ -73,10 +73,19 @@ tokens for both Monday and Friday parent intros and the workboard notice.
 - Role choices are restricted to users present in source data. A role absent from
   its cited original message becomes `확인 필요`; no substitute person is inferred.
 - Completion claims require positive completion wording and a real cited source.
-  Missing or ambiguous completion dates become `확인 필요` without blocking the
-  rest of the report; dates are never inferred from message timestamps or deadlines.
-  Explicit completion dates must fall in the correct Monday/Friday reporting
-  window. Negative completion wording and pending approval are not completion.
+  Confirmed design completion is retained when its exact date is unknown; only
+  the date is marked for confirmation. Comment timestamps identify confirmation
+  dates, never invented actual completion dates. Final design/HTML delivery and
+  downstream MD publication are separate scopes. New actual design revisions
+  keep only their affected deliverable open.
+  Explicit completion dates, or undated confirmation comments, must belong to
+  the report completion window. Bot receipts cannot reopen prior completions.
+- Broadcast replies resolve to their original request. Full paginated replies
+  are read chronologically, latest explicit assignments and accepted schedules
+  take precedence, and multiple workers are supported. A second model pass
+  audits the draft against the original sources before publication.
+- `BOARD_CONFIG` is optionally reused as a private verified people directory.
+  Unique names in assignment sentences can resolve to configured Slack users.
 - Only the designated channel is read. Notion board updates, personal briefings
   and ChatGPT Page state synchronization are outside this workflow.
 
@@ -91,16 +100,22 @@ on the updated branch, select the matching `mode`, and enable `publish`. The
 matching Monday/Friday publication switch must already be enabled, and the run
 must still be inside the normal posting window. Rerunning an old failed job uses
 its original commit and does not pick up the fix. Leave `publish` off for a draft.
-To change only the layout of the selected date's existing table reply, also select
-`reformat_existing`. This updates that original bot reply in place, preserving its
-facts and source links without another AI summary or a duplicate reply. Leaving
-`publish` off validates the conversion without writing to Slack.
+To change only layout, select `reformat_existing` within the normal posting window.
+The original reply is retained as the first table, with further short tables added
+in the same thread. Human replies and the parent are preserved.
 
-Both draft messages are built and validated before the parent is posted. Existing
-reports are detected from their date and title or bot metadata. An existing complete
-pair is skipped; a parent-only report gets a reply. After posting the thread is read
-back. A reply is retried once only when a successful read confirms it is absent.
-An ambiguous write is not automatically retried. Check Slack before rerunning.
+A reviewed factual repair uses `correct_existing_date` (ISO date, at most fourteen
+days old) and a matching private `REPORT_CORRECTION` Secret. The reviewed JSON has
+`report_date` and `items`; fact `source_id` values are original Slack message TSs.
+Every source is fetched again at the original cutoff, roles and completion evidence
+are validated, and only an existing bot report can be repaired. A repair cannot
+create a parent or bypass the regular scheduled posting window. It defaults to a
+dry run; writing still requires `publish` and the matching publication switch.
+Never put private reviewed rows in workflow inputs, public source, logs or artifacts.
+
+All messages are built before posting. Every table is read back and its row content
+compared. Completed part markers prevent duplicates; ambiguous writes are never
+automatically retried. Check Slack before rerunning a failed partial publication.
 
 The repository concurrency group serializes runs of this workflow only. It cannot
 serialize old ChatGPT schedules; disable those before enabling GitHub posting.
@@ -110,4 +125,4 @@ a 10,000-token model output cap and a 5,000-character detail cap. Exceeding any
 cap stops the report instead of silently truncating it. Long history can require
 separate private checkpoint storage before activating production scheduling.
 
-Run offline checks: `python3 -m unittest test_weekly_report.py`.
+Run offline checks: `python3 -m unittest test_weekly_report.py test_report_accuracy.py test_board_weekly.py`.

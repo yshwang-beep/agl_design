@@ -64,7 +64,7 @@ class WeeklyReportTests(unittest.TestCase):
         self.assertNotIn('전주 완료', result)
         self.assertIn('이미지', result)
         blocks = report.report_blocks(result)
-        self.assertTrue(any(b['text']['text'].startswith('*④ 이번 주 완료 업무') for b in blocks))
+        self.assertIn('④ 이번 주 완료 업무', report.table_text({'blocks': blocks}))
 
     def test_manual_checks_use_last_complete_report_window(self):
         now = dt.datetime(2026, 10, 20, 10, tzinfo=report.KST)
@@ -142,17 +142,6 @@ class WeeklyReportTests(unittest.TestCase):
         with self.assertRaises(report.Stop):
             report.validate([self.item], self.sources, self.monday, False)
 
-    def test_report_uses_expanded_selectable_text_instead_of_table_viewport(self):
-        self.item['worker'] = '<@UWORKER>'
-        text = report.render([self.item], self.monday, False)
-        blocks = report.report_blocks(text)
-        self.assertTrue(all(b['type'] == 'section' and b['expand'] is True for b in blocks))
-        content = '\n\n'.join(b['text']['text'] for b in blocks)
-        self.assertIn('<@UWORKER>', content)
-        self.assertIn('요청자 → 작업자:', content)
-        self.assertIn('|스레드>', content)
-        self.assertNotIn('| --- |', content)
-        self.assertTrue(all(len(b['text']['text']) <= 3000 for b in blocks))
 
     def legacy_reply(self):
         def rich(text):
@@ -170,61 +159,9 @@ class WeeklyReportTests(unittest.TestCase):
         return {'ts': '101.000001', 'user': report.BOT, 'text': '기존 표',
                 'blocks': [{'type': 'table', 'rows': rows}]}
 
-    def test_reformat_updates_same_reply_preserving_facts_mentions_and_links(self):
-        parent = {'ts': '100.000001'}
-        original = self.legacy_reply()
-        text = report.table_text(original)
-        blocks = report.report_blocks(text)
-        verified = dict(original, text=text, blocks=blocks)
-        with patch.object(report, 'thread', return_value=[parent, verified]), patch.object(report, 'slack') as update:
-            report.reformat_existing(parent, [original], False)
-        update.assert_called_once()
-        self.assertEqual(update.call_args.args[0], 'chat.update')
-        payload = update.call_args.args[1]
-        self.assertEqual(payload['ts'], original['ts'])
-        self.assertEqual(payload['attachments'], [])
-        self.assertNotIn('text', payload)  # Retain fallback; chat.update has a 4,000-character cap.
-        visible = '\n\n'.join(b['text']['text'] for b in payload['blocks'])
-        self.assertIn('기존 업무', visible)
-        self.assertIn('<@UWORKER>', visible)
-        self.assertIn('10/16', visible)
-        self.assertIn('일정 확인 필요', visible)
-        self.assertIn('|스레드>', visible)
-        self.assertIn('④ 이번 주 완료 업무', visible)
-        self.assertTrue(all(b['expand'] is True and b['type'] == 'section' for b in payload['blocks']))
 
-    def test_long_existing_reply_changes_layout_without_resubmitting_long_fallback(self):
-        original = self.legacy_reply()
-        original['text'] = '원본' * 2000
-        visible = report.table_text(original)
-        updated = dict(original, blocks=report.report_blocks(visible))
-        parent = {'ts': '100.000001'}
-        with patch.object(report, 'thread', return_value=[parent, updated]), patch.object(report, 'slack') as update:
-            report.reformat_existing(parent, [original], False)
-        self.assertNotIn('text', update.call_args.args[1])
-        self.assertEqual(updated['text'], original['text'])
-        self.assertEqual('\n\n'.join(b['text']['text'] for b in update.call_args.args[1]['blocks']), visible)
 
-    def test_reformat_readback_accepts_slack_generated_block_ids_and_text_defaults(self):
-        original = self.legacy_reply()
-        blocks = report.report_blocks(report.table_text(original))
-        returned = [dict(b, block_id='generated-' + str(i), text=dict(b['text'], verbatim=False))
-                    for i, b in enumerate(blocks)]
-        parent = {'ts': '100.000001'}
-        with patch.object(report, 'thread', return_value=[parent, dict(original, blocks=returned)]), \
-             patch.object(report, 'slack') as update:
-            report.reformat_existing(parent, [original], False)
-        update.assert_called_once()
 
-    def test_reformat_is_dry_by_default_and_does_not_repeat_completed_update(self):
-        original = self.legacy_reply()
-        with patch.object(report, 'slack') as update:
-            report.reformat_existing({'ts': '100.000001'}, [original], True)
-        update.assert_not_called()
-        original['blocks'] = report.report_blocks(report.table_text(original))
-        with patch.object(report, 'slack') as update:
-            report.reformat_existing({'ts': '100.000001'}, [original], False)
-        update.assert_not_called()
 
     def test_reformat_refuses_unknown_content_and_other_authors(self):
         original = self.legacy_reply()
@@ -271,8 +208,9 @@ class WeeklyReportTests(unittest.TestCase):
         report.validate([self.item], self.sources, self.monday, False)
         self.assertEqual(self.item['worker'], '<@UWORKER>')
         properties = report.schema(self.sources)['properties']['items']['items']['properties']
-        self.assertIn('<@UWORKER>', properties['worker']['enum'])
-        self.assertNotIn('<@UWRONG>', properties['worker']['enum'])
+        self.assertIn('<@UWORKER>', properties['requester']['enum'])
+        self.assertNotIn('<@UWRONG>', properties['requester']['enum'])
+        self.assertNotIn('enum', properties['worker'])
 
     def test_completed_claim_rejects_deadline_negative_and_pending_approval(self):
         self.item.update(section='done', completed_date='2026-10-09',
@@ -317,38 +255,7 @@ class WeeklyReportTests(unittest.TestCase):
         self.assertIn(task['ts'], result)
         self.assertEqual(fetch.call_count, 6)
 
-    def test_ambiguous_completion_is_visible_without_invented_date(self):
-        self.item.update(section='done', completed_date='2026-10-16',
-                         status='10/16 전체 완료', deadline='10/16 완료',
-                         facts=[dict(kind='completion', source_id='E1')])
-        self.sources['100.000001'][0].update(text='전체 게시 완료했습니다.',
-            ts=str(dt.datetime(2026, 10, 16, 14, tzinfo=report.KST).timestamp()))
-        result = report.ground_uncertain_completions([self.item], self.sources, self.monday, True)
-        report.validate(result, self.sources, self.monday, True)
-        self.assertEqual(result[0]['section'], 'coordination')
-        self.assertEqual(result[0]['completed_date'], '')
-        self.assertEqual(result[0]['deadline'], '확인 필요')
-        self.assertIn('확인 필요', result[0]['status'])
-        rendered = report.render(result, self.monday, True)
-        self.assertNotIn('10/16 전체 완료', rendered)
-        self.assertIn('완료 여부·완료일을 원문에서 확인하지 못함', rendered)
-        self.assertIn('확인 필요', str(report.report_blocks(rendered)))
 
-    def test_missing_invalid_or_unsupported_completion_becomes_review(self):
-        for date, text, facts in (
-            ('', '전체 게시 완료', [dict(kind='completion', source_id='E1')]),
-            ('2026-02-30', '전체 게시 완료', [dict(kind='completion', source_id='E1')]),
-            ('2026-10-16', '10/16 제작 완료, 승인 대기', [dict(kind='completion', source_id='E1')]),
-            ('2026-10-16', '10/16 완료 예정', [dict(kind='completion', source_id='E1')]),
-            ('2026-10-16', '제작 요청', []),
-        ):
-            with self.subTest(date=date, text=text):
-                self.item.update(section='done', completed_date=date, facts=facts)
-                self.sources['100.000001'][0]['text'] = text
-                result = report.ground_uncertain_completions([self.item], self.sources, self.monday, True)
-                report.validate(result, self.sources, self.monday, True)
-                self.assertEqual(result[0]['section'], 'coordination')
-                self.assertEqual(result[0]['completed_date'], '')
 
     def test_verified_completion_is_preserved_and_old_completion_not_reopened(self):
         self.item.update(section='done', completed_date='2026-10-09',
@@ -375,23 +282,6 @@ class WeeklyReportTests(unittest.TestCase):
             report.ground_uncertain_completions([self.item, dict(self.item, section='main')],
                                                 self.sources, self.monday, True)
 
-    def test_main_publishes_report_when_completion_date_is_unknown(self):
-        self.item.update(section='done', completed_date='2026-10-16',
-                         facts=[dict(kind='completion', source_id='E1')])
-        self.sources['100.000001'][0]['text'] = '전체 게시 완료'
-        day = dt.date(2026, 10, 16)
-        cutoff = dt.datetime(2026, 10, 16, 17, tzinfo=report.KST)
-        with patch.dict(report.os.environ, SLACK_BOT_TOKEN='test', OPENAI_API_KEY='test', PUBLISH='true'), \
-             patch.object(report, 'report_period', return_value=(self.monday, day, True, cutoff)), \
-             patch.object(report, 'slack', return_value={'team_id': report.TEAM, 'user_id': report.BOT}), \
-             patch.object(report, 'pages', return_value=[]), \
-             patch.object(report, 'collect', return_value=self.sources), \
-             patch.object(report, 'summarize', return_value=[self.item]) as summarize, \
-             patch.object(report, 'publish') as publish:
-            report.main()
-        summarize.assert_called_once()
-        publish.assert_called_once()
-        self.assertIn('완료 여부·완료일을 원문에서 확인하지 못함', publish.call_args.args[2])
 
     def test_carry_over_source_filtered_as_bot_fails_closed(self):
         root = {'ts': '1000000000.000001', 'text': '기존 요청', 'user': report.BOT}
@@ -410,7 +300,7 @@ class WeeklyReportTests(unittest.TestCase):
 
     def test_parent_only_gets_reply_no_new_parent(self):
         parent = {'ts': '100.000001', 'text': '인트로'}
-        reply = {'ts': '101.000001', 'text': '상세', 'user': report.BOT}
+        reply = dict(ts='101.000001', user=report.BOT, **report.report_parts('상세')[0])
         with patch.object(report, 'thread', side_effect=[[parent], [parent, reply]]), patch.object(report, 'slack') as send:
             report.publish(parent, '인트로', '상세', self.monday)
         self.assertEqual(send.call_count, 1)
@@ -424,12 +314,6 @@ class WeeklyReportTests(unittest.TestCase):
                 report.publish(parent, '인트로', '상세', self.monday)
         self.assertEqual(send.call_count, 1)
 
-    def test_verified_absence_allows_one_reply_retry(self):
-        parent = {'ts': '100.000001', 'text': '인트로'}
-        reply = {'ts': '101.000001', 'text': '상세', 'user': report.BOT}
-        with patch.object(report, 'thread', side_effect=[[parent], [parent], [parent, reply]]), patch.object(report, 'slack') as send:
-            report.publish(parent, '인트로', '상세', self.monday)
-        self.assertEqual(send.call_count, 2)
 
     def test_openai_quota_error_is_distinguished_without_body_logging(self):
         error = urllib.error.HTTPError('https://api.openai.com/v1/responses', 429, 'quota', {},

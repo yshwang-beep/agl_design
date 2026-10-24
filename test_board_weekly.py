@@ -319,6 +319,22 @@ class BoardTests(unittest.TestCase):
         self.assertEqual(result['status'], '확인 필요')
         self.assertEqual(result['progress'], '')
 
+    def test_design_delivery_does_not_require_downstream_product_setting(self):
+        text = '최종 수정 완료하여 HTML 전달드립니다. 상품 셋팅 확인 부탁드립니다.'
+        self.item.update(status='완료', completionScope='design',
+                         completionFact={'sourceId':'E2', 'quote':text})
+        self.sources[self.key]['messages'][1]['text'] = text
+        self.assertEqual(self.payload()['status'], '완료')
+        self.sources[self.key]['messages'][1]['text'] += ' 디자인 수정 대기'
+        self.assertEqual(self.payload()['status'], '확인 필요')
+
+    def test_joint_assignment_by_verified_name(self):
+        messages = {'E1':dict(user='UALPHA', text='저와 가람님 함께 진행하겠습니다.')}
+        directory = [dict(id='UALPHA',name='이하루'),dict(id='UBETA',name='김가람')]
+        for actor in ('UALPHA','UBETA'):
+            fact = dict(kind='owner',actor=actor,sourceId='E1',quote=messages['E1']['text'])
+            self.assertTrue(board.direct_role(fact,messages,directory))
+
     def test_existing_task_matching_requires_same_thread_and_same_deliverable_title(self):
         self.item['sourceTaskId'] = 'old-task'
         old = {'id': 'old-task', 'title': self.item['title'], 'link': 'https://example.slack.com/archives/CTEST/p' + stamp(13).replace('.', '')}
