@@ -59,12 +59,12 @@ class WeeklyReportTests(unittest.TestCase):
         self.item.update(section='done', completed_date='2026-10-16',
                          facts=[dict(kind='completion', source_id='E1')])
         result = report.render([self.item], self.monday, True)
-        self.assertIn('④ 이번 주 완료 업무 ㅣ 10/12~10/16', result)
-        self.assertIn('① 이번 주 주요 업무 ㅣ 10/12~10/18', result)
+        self.assertIn('③ 이번 주 완료 업무 ㅣ 10/12~10/16', result)
+        self.assertIn('① 진행 중 업무 ㅣ 10/12~10/18', result)
         self.assertNotIn('전주 완료', result)
         self.assertIn('이미지', result)
         blocks = report.report_blocks(result)
-        self.assertIn('④ 이번 주 완료 업무', report.table_text({'blocks': blocks}))
+        self.assertIn('③ 이번 주 완료 업무', report.table_text({'blocks': blocks}))
 
     def test_manual_checks_use_last_complete_report_window(self):
         now = dt.datetime(2026, 10, 20, 10, tzinfo=report.KST)
@@ -129,7 +129,7 @@ class WeeklyReportTests(unittest.TestCase):
         result = report.render([self.item], self.monday, False)
         self.assertIn('|스레드>', result)
         self.assertIn('10/12~10/18', result)
-        self.assertIn('10/05~10/11', result)
+        self.assertNotIn('완료 업무', result)
         self.item['status'] = '긴내용' * 2000
         with self.assertRaises(report.Stop):
             report.render([self.item], self.monday, False)
@@ -263,8 +263,7 @@ class WeeklyReportTests(unittest.TestCase):
         self.sources['100.000001'][0]['text'] = '10/9 전체 게시 완료'
         self.assertEqual(report.ground_uncertain_completions([self.item], self.sources, self.monday, True), [])
         result = report.ground_uncertain_completions([self.item], self.sources, self.monday, False)
-        self.assertEqual(result[0]['section'], 'done')
-        self.assertEqual(result[0]['completed_date'], '2026-10-09')
+        self.assertEqual(result, [])  # Monday excludes proven completions.
 
     def test_completion_fallback_cannot_hide_invalid_references_or_duplicates(self):
         self.item.update(section='done', completed_date='', facts=[dict(kind='completion', source_id='E_MISSING')])

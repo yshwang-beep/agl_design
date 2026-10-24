@@ -83,12 +83,46 @@ class AccuracyTests(unittest.TestCase):
             self.assertEqual(visible.count('작업 ' + str(n)), 1)
         self.assertEqual(visible.count('<@UALPHA>'), 8)
         self.assertEqual(visible.count('|스레드>'), 8)
-        self.assertEqual(sum('④ 이번 주 완료 업무' in p['text'] for p in parts), 1)
+        self.assertEqual(sum('③ 이번 주 완료 업무' in p['text'] for p in parts), 1)
         titles = [title for p in parts for title in r.section_titles(p)]
         self.assertEqual(len(titles), 4)
         self.assertEqual(len(set(titles)), 4)
-        self.assertEqual(sum('④ 이번 주 완료 업무' in title for title in titles), 1)
+        self.assertEqual(sum('③ 이번 주 완료 업무' in title for title in titles), 1)
         self.assertTrue(r.complete_parts([dict(ts=str(n), **p) for n, p in enumerate(parts)]))
+
+    def test_monday_excludes_completion_and_friday_has_four_status_sections(self):
+        for friday in (True, False):
+            headings = r.headings(self.monday, friday)
+            expected = ['main', 'planned', 'done', 'coordination'] if friday else ['main', 'planned', 'coordination']
+            self.assertEqual([key for key, _ in headings], expected)
+            self.assertTrue(headings[0][1].startswith('① 진행 중 업무'))
+            self.assertEqual(headings[1][1], '② 진행 예정 업무')
+            self.assertEqual(headings[-1][1], ('④' if friday else '③') + ' 보류·확인 필요 업무')
+        self.assertEqual(r.headings(self.monday, True)[2][1], '③ 이번 주 완료 업무 ㅣ 10/19~10/23')
+
+    def test_monday_omits_proven_completion_rows_and_even_empty_completion_headings(self):
+        self.sources['1.000001'][0]['ts'] = str(dt.datetime(2026, 10, 16, tzinfo=r.KST).timestamp())
+        items = r.ground_uncertain_completions([self.item], self.sources, self.monday, False)
+        self.assertEqual(items, [])
+        # Defense in depth: direct rendering cannot leak a done row on Monday.
+        detail = r.render([self.item, dict(self.item, section='main', task='진행 중 테스트')], self.monday, False)
+        self.assertNotIn('완료 업무', detail)
+        self.assertNotIn('PDP 디자인 최종본', detail)
+        self.assertIn('진행 중 테스트', detail)
+        self.assertEqual(len(r.headings(self.monday, False)), 3)
+
+    def test_regrouping_preserves_existing_reply_slots_with_real_rows(self):
+        items = [dict(self.item, section='done', task='작업 ' + str(n)) for n in range(7)]
+        detail = r.render(items, self.monday, True)
+        natural = r.report_parts(detail)
+        padded = r.report_parts(detail, minimum_parts=len(natural) + 1)
+        self.assertEqual(len(padded), len(natural) + 1)
+        content = '\n'.join(r.table_text({'blocks': [b]}) for p in padded for b in p['blocks'] if b['type'] == 'table')
+        for n in range(7):
+            self.assertEqual(content.count('작업 ' + str(n)), 1)
+        titles = [title for p in padded for title in r.section_titles(p)]
+        self.assertEqual(len(titles), 4)
+        self.assertTrue(r.complete_parts([dict(ts=str(n), **p) for n, p in enumerate(padded)]))
 
     def test_correction_updates_original_reply_preserves_human_comments_and_verifies_rows(self):
         parent = dict(ts='1.000001')

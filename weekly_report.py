@@ -200,16 +200,22 @@ RULES = '''Slack 원문을 근거로 한국어 디자인 업무 보고를 작성
 원문부터 마지막 댓글까지 시간순으로 읽고, 마지막 명시적 배정/합의 일정/수정 완료를 적용한다.
 공동 작업자는 모두 표시하고, 주차/산출물별 담당자·일정이 다르면 행을 분리한다.
 cc나 멘션만으로 배정하지 않되 실제 배정 문장에 있는 이름은 context.people과 대조한다.
-동일 업무는 한 번만. main=이번 주 마감/현재 핵심 진행, planned=착수 전 일정/다음 행동 확정,
-coordination=마감/작업자/요청사항 협의 필요, done=대상 기간에 디자인 산출물 완료가 확인된 업무.
+동일 산출물은 한 번만. 중요도나 마감 임박 여부로 구역을 정하지 말고 실제 진행 상태로만 분류한다.
+main=진행 중 업무: 실제 착수·제작·수정·검토 중이라는 근거가 있는 업무.
+planned=진행 예정 업무: 앞으로 작업할 일정/배정이 있고 아직 실제 착수 근거가 없는 업무. 착수 미확인은 상태에 명시한다.
+done=완료 업무: 대상 기간에 해당 디자인 산출물의 작업·최종 전달 완료가 확인된 업무.
+coordination=보류·확인 필요 업무: 명시적 보류 또는 자료·요청 범위·담당·일정 미확정으로 다음 진행을 기다리는 업무.
+제작이 진행 중인 업무에 확인 질문이 있다는 이유만으로 전체를 보류로 바꾸지 않는다. 실제 중단/진행 대기 범위를 구분한다.
+이미 완료한 부분과 아직 자료를 기다리는 잔여 산출물은 분리한다. 진행 예정과 진행 중을 중요도로 섞지 않는다.
 금요일에는 이번 주 월요일부터 조회 마감까지 관련 열린 업무와 이번 주 완료 업무를 보고한다.
-월요일에는 최근14일과 이전 미완료 후속, 전주(월~일)에 완료된 업무만 done.
+월요일에는 최근14일과 이전 미완료 후속 중 열린 업무만 보고한다. 완료 업무는 완료 기간에 관계없이 제외한다.
+월요일 구역은 진행 중/진행 예정/보류·확인 필요 세 가지뿐이며 완료 제목이나 빈 완료 표도 만들지 않는다.
 정확한 완료일과 완료 여부를 분리한다. 날짜 없는 완료 댓글도 완료 근거다.
 완료일이 원문에 명시되지 않으면 completed_date는 빈 문자열로 두고 상태에는 댓글 날짜 기준 '완료 확인'이라 쓴다.
 메시지 게시일을 실제 완료일로 단정하지 않는다. 과거 완료를 이번 주 bot 확인 알림만으로 다시 집계하지 않는다.
 완료 여부 자체가 불명확한 경우만 확인 필요. 원문에 확인된 마감·배정·부분 완료 사실은 지우지 않는다.
 한 프로젝트의 일정 공지/실제 요청/방송된 최종 댓글을 별개 업무로 중복 집계하지 않는다.
-상시 관리는 done 아님. 착수 미확인도 확인 필요.
+상시 관리는 done 아님. 착수 미확인은 확정된 예정 업무의 상태에 표시하고, 일정·배정 자체도 불명확할 때 보류·확인 필요로 분류한다.
 요청자/작업자/완료 판단에 쓴 원문 메시지의 evidence_id를 facts.source_id로 반환한다.
 facts.kind는 requester/worker/completion 중 하나다. source_id는 해당 thread 안의 실제 메시지 번호여야 한다.
 요청자·작업자는 <@ID> 또는 확인 필요만 반환한다. 공동 작업자는 <@ID> + <@ID> 형식이다.
@@ -420,7 +426,8 @@ def ground_uncertain_completions(items, sources, monday, friday):
                 item['section'] = 'coordination'
                 item['status'] += '; 완료 여부 확인 필요'
                 item['facts'] = [fact for fact in item['facts'] if fact['kind'] != 'completion']
-        result.append(item)
+        if friday or item['section'] != 'done':
+            result.append(item)
     return result
 
 
@@ -462,11 +469,12 @@ def cell(value):
 
 def headings(monday, friday):
     end = monday + dt.timedelta(days=6)
-    sections = [('main', '① 이번 주 주요 업무 ㅣ ' + monday.strftime('%m/%d') + '~' + end.strftime('%m/%d')),
-                ('planned', '② 진행 예정 업무'), ('coordination', '③ 일정 조율 업무')]
+    sections = [('main', '① 진행 중 업무 ㅣ ' + monday.strftime('%m/%d') + '~' + end.strftime('%m/%d')),
+                ('planned', '② 진행 예정 업무')]
     first, last = completion_window(monday, friday)
-    sections.append(('done', ('④ 이번 주 완료 업무 ㅣ ' if friday else '④ 전주 완료 업무 ㅣ ')
-                     + first.strftime('%m/%d') + '~' + last.strftime('%m/%d')))
+    if friday:
+        sections.append(('done', '③ 이번 주 완료 업무 ㅣ ' + first.strftime('%m/%d') + '~' + last.strftime('%m/%d')))
+    sections.append(('coordination', ('④' if friday else '③') + ' 보류·확인 필요 업무'))
     return sections
 
 
@@ -530,7 +538,7 @@ def rich_cell(value):
                                              'elements': elements or [{'type': 'text', 'text': ' '}]}]}
 
 
-def report_parts(detail):
+def report_parts(detail, minimum_parts=0):
     """At most three task rows per message, avoiding Slack's long-table preview."""
     parts, heading, cards = [], '', []
     heading_pending = False
@@ -565,7 +573,24 @@ def report_parts(detail):
             if len(cards) == 3:
                 flush()
     flush()
+    # Keep existing bot replies when regrouping shrinks the natural part count.
+    # Split real rows across those replies instead of deleting a message or
+    # leaving an empty placeholder. Section titles still appear only once.
+    while len(parts) < minimum_parts:
+        candidate = next((n for n, p in enumerate(parts)
+                          if len(next(b for b in p['blocks'] if b['type'] == 'table')['rows']) > 2), None)
+        if candidate is None:
+            raise Stop('Not enough report rows to preserve existing reply identities.')
+        part = parts[candidate]
+        table = next(b for b in part['blocks'] if b['type'] == 'table')
+        tail = table['rows'].pop()
+        extra = dict(table, rows=[table['rows'][0], tail])
+        titles = section_titles(part)
+        part['text'] = ('\n\n'.join(titles) + '\n\n' if titles else '') + table_text({'blocks': [table]})
+        parts.insert(candidate + 1, {'text': table_text({'blocks': [extra]}), 'blocks': [extra]})
     for n, part in enumerate(parts, 1):
+        for block in part['blocks']:
+            block.pop('block_id', None)
         part['blocks'][0]['block_id'] = 'design_report_part_' + str(n) + '_of_' + str(len(parts))
     return parts
 
@@ -602,7 +627,7 @@ def section_titles(message):
 
 def replace_details(parent, detail, dry=False):
     found = sorted(details(thread(parent['ts'], str(time.time()))), key=lambda m: float(m['ts']))
-    parts = report_parts(detail)
+    parts = report_parts(detail, minimum_parts=len(found))
     if not found or any(m.get('user') != BOT for m in found) or len(found) > len(parts):
         raise Stop('Existing report replies cannot be safely replaced.')
     if dry:

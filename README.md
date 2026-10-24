@@ -43,10 +43,24 @@ tokens for both Monday and Friday parent intros and the workboard notice.
 
 ## Reporting
 
+Friday reports use these status categories, in this order:
+1. 진행 중 업무: confirmed active production, revision or review.
+2. 진행 예정 업무: scheduled or assigned future work without confirmed actual start.
+3. 완료 업무: final design/deliverable completion confirmed in the reporting period.
+4. 보류·확인 필요 업무: explicitly held work or work waiting for required inputs,
+   ownership, scope or schedule decisions.
+Priority and approaching deadlines do not determine the category. An unanswered
+question alone does not turn an otherwise active task into a wholly blocked task.
+Friday completion covers the current Monday–Friday. Monday reports exclude all
+completed work and use only ① 진행 중 업무, ② 진행 예정 업무, ③ 보류·확인 필요 업무.
+No completion heading or empty completion table is emitted on Monday.
+Partial completions and waiting deliverables are separate.
+
+
 - Monday 09:00 Asia/Seoul: recent 14 days, current week open work, prior report
-  sources followed up, previous Monday–Sunday explicit completions.
+  sources followed up; completed work is excluded.
 - Friday 17:00 Asia/Seoul: current-week relevant open work, including weekend
-  deadlines, and explicitly completed Monday–Friday work in the fourth section.
+  deadlines, and explicitly completed Monday–Friday work in the third section.
 - Both post one introduction and consecutive native table replies, with at most
   three task rows per table. This preserves the four-column format while keeping
   each table below the long-table preview. Slack provides no forced table height
