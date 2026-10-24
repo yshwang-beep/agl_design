@@ -51,6 +51,8 @@ tokens for both Monday and Friday parent intros and the workboard notice.
   three task rows per table. This preserves the four-column format while keeping
   each table below the long-table preview. Slack provides no forced table height
   or expand flag. Configured group/user mentions appear once in the parent.
+  Each section title appears once, above its first table; continuation tables
+  retain their column headers and rows without repeating the section title.
 - Friday parent intros also include a short thank-you/weekend encouragement.
   Six approved variants rotate by report week; retries retain the same wording.
   The rotation starts with the approved message on 2026-10-23 and repeats after

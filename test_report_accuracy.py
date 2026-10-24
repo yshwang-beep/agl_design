@@ -83,7 +83,12 @@ class AccuracyTests(unittest.TestCase):
             self.assertEqual(visible.count('작업 ' + str(n)), 1)
         self.assertEqual(visible.count('<@UALPHA>'), 8)
         self.assertEqual(visible.count('|스레드>'), 8)
-        self.assertIn('④ 이번 주 완료 업무', parts[-1]['text'])
+        self.assertEqual(sum('④ 이번 주 완료 업무' in p['text'] for p in parts), 1)
+        titles = [title for p in parts for title in r.section_titles(p)]
+        self.assertEqual(len(titles), 4)
+        self.assertEqual(len(set(titles)), 4)
+        self.assertEqual(sum('④ 이번 주 완료 업무' in title for title in titles), 1)
+        self.assertTrue(r.complete_parts([dict(ts=str(n), **p) for n, p in enumerate(parts)]))
 
     def test_correction_updates_original_reply_preserves_human_comments_and_verifies_rows(self):
         parent = dict(ts='1.000001')

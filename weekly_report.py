@@ -533,14 +533,21 @@ def rich_cell(value):
 def report_parts(detail):
     """At most three task rows per message, avoiding Slack's long-table preview."""
     parts, heading, cards = [], '', []
+    heading_pending = False
 
     def flush():
+        nonlocal heading_pending
         if not cards:
             return
         body = '\n\n'.join(cards)
         block = report_blocks(body)[0]
-        blocks = [{'type': 'section', 'text': {'type': 'mrkdwn', 'text': heading}, 'expand': True}, block]
-        parts.append({'text': heading + '\n\n' + body, 'blocks': blocks})
+        blocks = [block]
+        prefix = ''
+        if heading_pending:
+            blocks.insert(0, {'type': 'section', 'text': {'type': 'mrkdwn', 'text': heading}, 'expand': True})
+            prefix = heading + '\n\n'
+        parts.append({'text': prefix + body, 'blocks': blocks})
+        heading_pending = False
         cards.clear()
 
     # Older renderers joined a section heading and its first task by one newline.
@@ -552,6 +559,7 @@ def report_parts(detail):
         if re.match(r'^\*[①②③④]', paragraph):
             flush()
             heading = paragraph
+            heading_pending = True
         else:
             cards.append(paragraph)
             if len(cards) == 3:
@@ -583,7 +591,13 @@ def verify_parts(parent, wanted):
         expected = [b for b in part['blocks'] if b.get('type') == 'table']
         if len(tables) != 1 or table_text({'blocks': tables}) != table_text({'blocks': expected}):
             raise Stop('Report table content differs on readback.')
+        if section_titles(message) != section_titles(part):
+            raise Stop('Report section titles differ on readback.')
     print('PASS: All report table parts read back with matching rows.')
+
+
+def section_titles(message):
+    return [b.get('text', {}).get('text', '') for b in message.get('blocks', []) if b.get('type') == 'section']
 
 
 def replace_details(parent, detail, dry=False):
@@ -595,6 +609,13 @@ def replace_details(parent, detail, dry=False):
         print('PASS: Reviewed correction and native table parts validated. No Slack update.')
         return
     for n, part in enumerate(parts):
+        if n < len(found):
+            existing_tables = [b for b in found[n].get('blocks', []) if b.get('type') == 'table']
+            wanted_tables = [b for b in part['blocks'] if b.get('type') == 'table']
+            if (len(existing_tables) == 1 and section_titles(found[n]) == section_titles(part)
+                    and table_text({'blocks': existing_tables}) == table_text({'blocks': wanted_tables})
+                    and found[n].get('text') == part['text']):
+                continue
         payload = {'channel': CHANNEL, 'text': part['text'], 'blocks': part['blocks'],
                    'unfurl_links': False, 'unfurl_media': False}
         if n < len(found):
