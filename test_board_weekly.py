@@ -116,12 +116,14 @@ class BoardTests(unittest.TestCase):
                     api.call(operation, {})
             token.assert_not_called()
 
-    def test_notice_uses_shared_group_and_person_mentions_once(self):
+    def test_notice_keeps_design_group_but_excludes_person_mentions(self):
         mentions = '<!subteam^SGROUP> <@UREVIEWER> <@UCEO>'
         with patch.dict(board.os.environ, {'SLACK_GROUP_MENTION': mentions}):
             text = board.notice_text(self.cfg, self.period, 'https://example.workers.dev')
-        self.assertEqual(text.count(mentions), 1)
-        self.assertTrue(text.startswith('*디자인팀 주간 업무 취합 업데이트*\n' + mentions))
+        self.assertEqual(text.count('<!subteam^SGROUP>'), 1)
+        self.assertNotIn('<@UREVIEWER>', text)
+        self.assertNotIn('<@UCEO>', text)
+        self.assertTrue(text.startswith('*디자인팀 주간 업무 취합 업데이트*\n<!subteam^SGROUP>'))
 
     def test_draft_repair_identifies_all_bad_rows_and_cross_row_duplicates(self):
         import copy
