@@ -15,9 +15,13 @@ on:
         type: boolean
         default: false
       reformat_existing:
-        description: Reformat the selected date's existing reply as expanded text without changing report facts
+        description: Restore native short tables in an existing reply without changing report facts
         type: boolean
         default: false
+      correct_existing_date:
+        description: Existing report ISO date to repair using the private reviewed correction (never creates a parent)
+        type: string
+        default: ''
 permissions:
   contents: read
 concurrency:
@@ -37,12 +41,14 @@ jobs:
         with:
           persist-credentials: false
       - name: Offline validation
-        run: python3 -m unittest test_weekly_report.py
+        run: python3 -m unittest test_weekly_report.py test_report_accuracy.py test_board_weekly.py
       - name: Build and verify weekly report
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           REPORT_POLICY: ${{ secrets.REPORT_POLICY }}
+          BOARD_CONFIG: ${{ secrets.BOARD_CONFIG }}
+          REPORT_CORRECTION: ${{ inputs.correct_existing_date != '' && secrets.REPORT_CORRECTION || '' }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4.1' }}
           SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
           SLACK_CHANNEL_NAME: ${{ vars.SLACK_CHANNEL_NAME }}
@@ -52,6 +58,7 @@ jobs:
           SLACK_WORKSPACE_URL: ${{ vars.SLACK_WORKSPACE_URL }}
           REPORT_MODE: ${{ inputs.mode || 'auto' }}
           REFORMAT_EXISTING: ${{ inputs.reformat_existing == true && 'true' || 'false' }}
+          CORRECT_EXISTING_DATE: ${{ inputs.correct_existing_date || '' }}
           PUBLISH: >-
             ${{ ((github.event_name == 'schedule' &&
             ((github.event.schedule == '0 0 * * 1' && vars.MONDAY_REPORTS_ENABLED == 'true') ||
