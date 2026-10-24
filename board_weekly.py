@@ -597,7 +597,11 @@ class BoardAPI:
 
 def notice_text(cfg, period, board_url):
     label = period['start'].replace('-', '.') + '–' + period['end'][5:].replace('-', '.')
-    mentions = os.environ.get('SLACK_GROUP_MENTION', '').strip()
+    # Work-channel notices notify the design group only; shared Lab reports
+    # keep their separately configured reviewer/CEO mentions unchanged.
+    mentions = ' '.join(dict.fromkeys(re.findall(
+        r'<!subteam\^[A-Z0-9]+(?:\|[^>]+)?>',
+        os.environ.get('SLACK_GROUP_MENTION', ''))))
     if not mentions and cfg.get('group_id'):
         mentions = '<!subteam^' + cfg['group_id'] + '>'
     group = '\n' + mentions if mentions else ''
