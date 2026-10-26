@@ -620,6 +620,35 @@ def validate_draft(items, sources, active, cfg, start, end):
     return tasks, failures
 
 
+def reviewed_fallback(items, sources, active, cfg, start, end):
+    """Retain valid rows; uncertain rows get no inferred facts or invented evidence."""
+    tasks, failures = validate_draft(items, sources, active, cfg, start, end)
+    review, deferred = [], 0
+    for failure in failures:
+        if failure['failure'] == 'Duplicate board task in draft.':
+            continue  # The identical source/title row is already represented.
+        item = items[failure['item_index']]
+        source = sources.get(item['sourceKey'])
+        current = [m for m in (source or {}).get('messages', [])
+                   if start.timestamp() <= float(m['ts']) < end.timestamp()]
+        if not current or failure['failure'] == 'Sensitive material detected in board draft.':
+            deferred += 1  # Existing unfinished rows are carried by the server.
+            continue
+        title = item['title'].strip()
+        if not title or len(title) > 120 or SENSITIVE.search(title):
+            title = '원문 확인 필요 업무'
+        safe = dict(item, title=title, sourceTaskId='', owners=[], requester='', collaborators=[],
+                    status='확인 필요', chapters=['확인 필요'], due='', dueNote='일정 확인 필요',
+                    progress='', evidenceIds=[current[-1]['evidence_id']], roleFacts=[],
+                    completionScope='unknown', completionFact={'sourceId':'','quote':''},
+                    progressFact={'sourceId':'','quote':''}, issue=['자동 요약 검증 미충족 · 원문 확인 필요'],
+                    next=['원문과 댓글을 확인해 업무 정보를 보완'], decision=[])
+        row = task_payloads([safe], sources, active, cfg, start, end)[0]
+        row['verification'] = '담당자·일정·상태 원문 확인 필요'
+        review.append(row)
+    return tasks + review, len(review), deferred
+
+
 class BoardAPI:
     def __init__(self, base, publish=False):
         parsed = urllib.parse.urlsplit(base)
@@ -666,7 +695,7 @@ def notice_text(cfg, period, board_url):
             '· 오늘 10:00 팀 미팅에서 함께 확인합니다.\n· 해당 기간에 진행한 업무는 완료 건도 포함됩니다.')
 
 
-def schedule_notice(api, bot, cfg, state, monday, now, recovery=False):
+def schedule_notice(api, bot, cfg, state, monday, now, recovery=False, review_note=''):
     began = time.monotonic()
     if state.get('status') != 'committed':
         raise Stop('A verified board commit is required before announcing success.')
@@ -684,6 +713,8 @@ def schedule_notice(api, bot, cfg, state, monday, now, recovery=False):
     text = notice_text(cfg, state['period'], api.base)
     if recovery:
         text = '※ 갱신 시간 제한으로 게시가 지연되었습니다.\n\n' + text
+    if review_note:
+        text += '\n\n' + review_note
     pending = bot.pages('chat.scheduledMessages.list', {'channel': channel,
                         'oldest': str(post_at - 1), 'latest': str(post_at + 1)}, 'scheduled_messages')
     matches = [m for m in pending if m.get('text') == text and int(m.get('post_at', 0)) == post_at]
@@ -797,9 +828,21 @@ def execute(now=None):
         if not failures:
             break
         if attempt == 2:
-            raise Stop('Board draft still has ' + str(len(failures)) + ' invalid task(s); no writes accepted.')
+            break
         print('Draft repair required: ' + str(len(failures)) + ' task(s).', flush=True)
         repair = {'failures': failures, 'previous_items': items}
+    review_note = ''
+    if failures:
+        tasks, review_count, deferred = reviewed_fallback(items, sources, active, cfg, start, end)
+        print('Review handling: ' + str(review_count) + ' uncertain row(s); '
+              + str(deferred) + ' row(s) deferred without publishing unsupported facts.', flush=True)
+        notes = []
+        if review_count:
+            notes.append('원문 재확인이 필요한 ' + str(review_count) + '건은 ‘확인 필요’로 표시했습니다.')
+        if deferred:
+            notes.append('이번 주 근거가 없거나 검증을 통과하지 못한 ' + str(deferred)
+                         + '건의 신규 반영은 보류했고, 기존 미완료 기록은 보존했습니다.')
+        review_note = ' '.join(notes)
     if not publish:
         print('PASS: Board dry run validated; no board or Slack writes.')
         print('Period: ' + period['start'] + ' to ' + period['end'] + '; task count: ' + str(len(tasks)))
@@ -814,7 +857,7 @@ def execute(now=None):
     if (committed.get('status') != 'committed' or verified.get('status') != 'committed'
             or verified.get('revision') != committed.get('revision') or verified.get('runId') != committed.get('runId')):
         raise Stop('Workboard commit readback failed; notice not scheduled.')
-    outcome = schedule_notice(api, bot, cfg, verified, monday, dt.datetime.now(KST), recovery=recovery)
+    outcome = schedule_notice(api, bot, cfg, verified, monday, dt.datetime.now(KST), recovery=recovery, review_note=review_note)
     print('PASS: Board commit verified; notice ' + outcome + '. Actual future delivery is not yet verified.')
 
 

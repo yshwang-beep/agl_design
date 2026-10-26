@@ -70,3 +70,5 @@ bot/delivery-channel reads only, without source collection or AI calls.
 without board or Slack writes. Do not enable production until both succeed.
 
 Local checks: `python3 -m unittest test_board_weekly.py test_weekly_report.py`.
+
+After three unsuccessful draft repairs, valid rows can still be published. A row with a real current-period source can be retained as 확인 필요 with no inferred roles, date, progress or completion. Duplicate rows are collapsed. Rows without current evidence, unknown sources or sensitive draft content are deferred; existing unfinished records remain protected by server carry-over. The Slack notice explicitly identifies review/defer counts. Missing source coverage, failed board authentication or server validation still stop publication.

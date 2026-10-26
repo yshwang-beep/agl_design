@@ -15,6 +15,30 @@ def stamp(day, hour=12):
 
 
 class BoardTests(unittest.TestCase):
+    def test_unverifiable_row_does_not_block_valid_rows_or_invent_roles_dates_or_completion(self):
+        import copy
+        bad = copy.deepcopy(self.item)
+        bad.update(title='확인할 별도 업무', evidenceIds=['UNKNOWN'], status='완료', progress='100')
+        rows, review, deferred = board.reviewed_fallback([self.item, bad], self.sources, [], self.cfg, self.start, self.end)
+        self.assertEqual((len(rows), review, deferred), (2, 1, 0))
+        self.assertEqual(rows[0]['status'], '진행 중')
+        self.assertEqual(rows[1]['status'], '확인 필요')
+        self.assertEqual(rows[1]['owner'], '확인 필요')
+        self.assertEqual(rows[1]['due'], '')
+        self.assertEqual(rows[1]['progress'], '')
+        self.assertEqual(rows[1]['evidence'][0]['ts'], stamp(16))
+        self.assertEqual(rows[1]['sourceTaskId'], None)
+
+    def test_old_only_row_is_deferred_without_fabricating_current_evidence(self):
+        for m in self.sources[self.key]['messages']:
+            m['ts'] = stamp(1)
+        rows, review, deferred = board.reviewed_fallback([self.item], self.sources, [], self.cfg, self.start, self.end)
+        self.assertEqual((rows, review, deferred), ([], 0, 1))
+
+    def test_duplicate_draft_keeps_one_valid_row(self):
+        rows, review, deferred = board.reviewed_fallback([self.item, self.item], self.sources, [], self.cfg, self.start, self.end)
+        self.assertEqual((len(rows), review, deferred), (1, 0, 0))
+
     def test_large_source_pool_is_batched_without_omitting_or_splitting_threads(self):
         sources = {str(n): {'channel_id': 'CTEST', 'thread_ts': str(n), 'messages': [{'text': '가' * 70000}]}
                    for n in range(5)}
