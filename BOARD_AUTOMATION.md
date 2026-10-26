@@ -14,7 +14,17 @@ then schedules one Slack notice for Monday 09:00 Asia/Seoul.
   required for production writes. Keep both false until real-source validation.
 - GitHub scheduling can be delayed. Slack's accepted scheduling receipt, rather
   than GitHub's start time, establishes the intended delivery time.
-- Manual runs never change the board or send/schedule Slack messages.
+- Ordinary manual `preflight` and `validate` runs never write.
+- An explicitly approved `recover` run additionally needs its exact GitHub run ID
+  and a same-Monday 10:00 KST expiry provisioned on the server. All other manual
+  executions remain read-only. Recovery defaults off, uses the original source
+  cutoff and preservation/CAS checks, and schedules a clearly marked delayed
+  notice only after the board commit is read back successfully. The grant expires
+  automatically and does not change regular 08:30/09:00 behavior.
+- Relevant complete threads are collected up to a 3,000,000-character hard cap
+  and processed in model requests capped at 200,000 characters. No thread is
+  split or silently omitted; citations and existing-task mapping stay local to
+  each batch, and the combined draft is validated before any write.
 
 The workflow is separate from the Friday report. Its source and destination
 settings do not replace the Friday channel configuration.
@@ -37,7 +47,8 @@ this repository, logs, artifacts, or caches.
 
 Cloudflare verifies a short-lived GitHub OIDC token for this repository's numeric
 identity, owner, main branch, and exact workflow file. Manual tokens may only read
-the automation snapshot/status. No administrator password or permanent workboard
+unless their exact run ID has an owner-approved, expiring recovery grant.
+No administrator password or permanent workboard
 integration token is stored in GitHub.
 
 ## Preservation and retries

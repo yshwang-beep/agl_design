@@ -104,10 +104,14 @@ def config_from_env():
         raise Stop('BOARD_CONFIG is missing or invalid.') from None
 
 
-def publication_enabled(environ=None):
+def publication_enabled(environ=None, now=None):
     env = os.environ if environ is None else environ
-    return (env.get('GITHUB_EVENT_NAME') == 'schedule' and env.get('BOARD_ENABLED') == 'true'
-            and env.get('PUBLISH') == 'true')
+    now = now or dt.datetime.now(KST)
+    normal = env.get('GITHUB_EVENT_NAME') == 'schedule'
+    recovery = (env.get('GITHUB_EVENT_NAME') == 'workflow_dispatch' and env.get('BOARD_PHASE') == 'recover'
+                and env.get('BOARD_RECOVERY_DATE') == now.date().isoformat() and now.weekday() == 0
+                and dt.time(8, 30) <= now.time() < dt.time(10))
+    return (normal or recovery) and env.get('BOARD_ENABLED') == 'true' and env.get('PUBLISH') == 'true'
 
 
 def report_period(now, publish=False):
@@ -122,8 +126,9 @@ def report_period(now, publish=False):
     return period, start, end, monday
 
 
-def ensure_write_window(now, monday):
-    if now.date() != monday or not dt.time(7, 30) <= now.time() < dt.time(8, 30):
+def ensure_write_window(now, monday, recovery=False):
+    end = dt.time(10) if recovery else dt.time(8, 30)
+    if now.date() != monday or not dt.time(7, 30) <= now.time() < end:
         raise Stop('Board write cutoff reached; no board changes made.')
 
 
@@ -315,7 +320,7 @@ def collect_sources(slack, cfg, snapshot, start, end):
                            'reference_aliases': sorted(aliases.get(stamp, set())),
                            'current_ids': [m['evidence_id'] for m in compact if float(m['ts']) >= start.timestamp()]}
         coverage.append({'id': channel_id, 'type': kind, 'complete': True})
-        if len(json.dumps(result, ensure_ascii=False)) > 240000:
+        if len(json.dumps(result, ensure_ascii=False)) > 3000000:
             raise Stop('Relevant source input exceeds budget; no silent truncation.')
         if channel_index % 10 == 0:
             print('Collection progress: ' + str(channel_index) + '/' + str(len(by_id))
@@ -323,7 +328,7 @@ def collect_sources(slack, cfg, snapshot, start, end):
     eligible = {c['id'] for c in coverage}
     if any(ch not in eligible or (ch, ts) not in processed for ch, ts in carry):
         raise Stop('An unfinished task source could not be rechecked; no update accepted.')
-    if len(json.dumps(result, ensure_ascii=False)) > 240000:
+    if len(json.dumps(result, ensure_ascii=False)) > 3000000:
         raise Stop('Relevant source input exceeds budget; no silent truncation.')
     print('Collection complete: ' + str(len(coverage)) + ' channels; relevant threads: '
           + str(len(result)) + '.', flush=True)
@@ -382,7 +387,57 @@ def board_schema(sources, active, cfg):
             'required': ['items'], 'additionalProperties': False}
 
 
+def batch_active(sources, active):
+    keys = set(sources)
+    for source in sources.values():
+        keys.update(source.get('channel_id', '') + ':' + alias for alias in source.get('reference_aliases', []))
+    return [t for t in active if any(ch + ':' + ts in keys for ch, ts in source_references(t))]
+
+
+def batch_repair(sources, repair):
+    return ({'failures': [f for f in repair.get('failures', []) if f.get('sourceKey') in sources],
+             'previous_items': [i for i in repair.get('previous_items', []) if i.get('sourceKey') in sources]}
+            if repair else None)
+
+
+def source_batches(sources, active, cfg, period, repair=None, limit=200000):
+    """Keep every complete thread; size each model request independently."""
+    batches, batch = [], {}
+    def size(candidate):
+        local_active = batch_active(candidate, active)
+        existing = [{k: t[k] for k in ('id', 'title', 'status', 'owner', 'link', 'localEdited') if k in t}
+                    for t in local_active if not SENSITIVE.search(t.get('title', ''))]
+        context = {'period': period, 'existing': existing, 'designers': cfg['designers'],
+                   'collaborators': cfg.get('collaborators', []), 'repair': batch_repair(candidate, repair)}
+        return len(json.dumps({'context': context, 'sources': candidate}, ensure_ascii=False))
+    for key, source in sources.items():
+        candidate = dict(batch, **{key: source})
+        if size(candidate) > limit:
+            if not batch:
+                raise Stop('A complete source thread exceeds the model batch budget; review required.')
+            batches.append(batch)
+            batch = {key: source}
+            if size(batch) > limit:
+                raise Stop('A complete source thread exceeds the model batch budget; review required.')
+        else:
+            batch = candidate
+    if batch:
+        batches.append(batch)
+    return batches
+
+
 def summarize(sources, active, cfg, period, repair=None):
+    items = []
+    batches = source_batches(sources, active, cfg, period, repair)
+    for n, batch in enumerate(batches, 1):
+        local_active = batch_active(batch, active)
+        local_repair = batch_repair(batch, repair)
+        items.extend(summarize_batch(batch, local_active, cfg, period, local_repair))
+        print('Model batch complete: ' + str(n) + '/' + str(len(batches)) + '.', flush=True)
+    return items
+
+
+def summarize_batch(sources, active, cfg, period, repair=None):
     if not sources:
         return []
     existing = [{k: t[k] for k in ('id', 'title', 'status', 'owner', 'link', 'localEdited') if k in t}
@@ -611,7 +666,7 @@ def notice_text(cfg, period, board_url):
             '· 오늘 10:00 팀 미팅에서 함께 확인합니다.\n· 해당 기간에 진행한 업무는 완료 건도 포함됩니다.')
 
 
-def schedule_notice(api, bot, cfg, state, monday, now):
+def schedule_notice(api, bot, cfg, state, monday, now, recovery=False):
     began = time.monotonic()
     if state.get('status') != 'committed':
         raise Stop('A verified board commit is required before announcing success.')
@@ -620,13 +675,15 @@ def schedule_notice(api, bot, cfg, state, monday, now):
         return 'already_accepted'
     if notice != 'none':
         raise Stop('Existing notice intent requires receipt review; no duplicate scheduled.')
-    if now.date() != monday or now.time() >= dt.time(8, 58):
+    if now.date() != monday or now.time() >= (dt.time(9, 57) if recovery else dt.time(8, 58)):
         raise Stop('Notice scheduling cutoff reached; no late or immediate message sent.')
-    post_at = int(dt.datetime.combine(monday, dt.time(9), KST).timestamp())
+    post_at = (int(now.timestamp()) + 180 if recovery else int(dt.datetime.combine(monday, dt.time(9), KST).timestamp()))
     channel = cfg['notice_channel_id']
     if channel not in cfg['core_channel_ids'] or not channel.startswith('C'):
         raise Stop('Notice destination must be a configured public channel.')
     text = notice_text(cfg, state['period'], api.base)
+    if recovery:
+        text = '※ 예약 자동화 오류를 복구해 지연 안내드립니다.\n\n' + text
     pending = bot.pages('chat.scheduledMessages.list', {'channel': channel,
                         'oldest': str(post_at - 1), 'latest': str(post_at + 1)}, 'scheduled_messages')
     matches = [m for m in pending if m.get('text') == text and int(m.get('post_at', 0)) == post_at]
@@ -697,13 +754,17 @@ def execute(now=None):
     now = now or dt.datetime.now(KST)
     cfg = config_from_env()
     phase = os.environ.get('BOARD_PHASE', 'preflight')
-    if phase not in {'preflight', 'validate'}:
+    if phase not in {'preflight', 'validate', 'recover'}:
         raise Stop('Unknown board execution phase.')
-    required = ('SLACK_BOT_TOKEN', 'WORKBOARD_URL') + (('SLACK_USER_TOKEN', 'OPENAI_API_KEY') if phase == 'validate' else ())
+    required = ('SLACK_BOT_TOKEN', 'WORKBOARD_URL') + (('SLACK_USER_TOKEN', 'OPENAI_API_KEY') if phase in {'validate', 'recover'} else ())
     for key in required:
         if not os.environ.get(key):
             raise Stop('Required cloud setting missing: ' + key)
-    publish = phase == 'validate' and publication_enabled()
+    recovery = phase == 'recover'
+    if recovery and (os.environ.get('BOARD_RECOVERY_DATE') != now.date().isoformat() or now.weekday() != 0
+                     or not dt.time(8, 30) <= now.time() < dt.time(9, 57)):
+        raise Stop('Explicit recovery date or Monday morning recovery window is invalid.')
+    publish = phase in {'validate', 'recover'} and publication_enabled(now=now)
     period, start, end, monday = report_period(now, publish)
     api = BoardAPI(os.environ['WORKBOARD_URL'], publish)
     bot = Slack(os.environ['SLACK_BOT_TOKEN'], 'bot', publish)
@@ -719,11 +780,11 @@ def execute(now=None):
             raise Stop('Channel collection requires the authorized user token, not a bot token.')
     state = api.call('status', {'period': period})
     if publish and state.get('status') == 'committed':
-        outcome = schedule_notice(api, bot, cfg, state, monday, dt.datetime.now(KST))
+        outcome = schedule_notice(api, bot, cfg, state, monday, dt.datetime.now(KST), recovery=recovery)
         print('PASS: Existing board commit reused; notice ' + outcome + '.')
         return
     if publish:
-        ensure_write_window(now, monday)
+        ensure_write_window(now, monday, recovery=recovery)
     snapshot = api.call('snapshot')
     if 'revision' not in snapshot or not isinstance(snapshot.get('tasks'), list):
         raise Stop('Workboard snapshot is incomplete.')
@@ -743,7 +804,7 @@ def execute(now=None):
         print('PASS: Board dry run validated; no board or Slack writes.')
         print('Period: ' + period['start'] + ' to ' + period['end'] + '; task count: ' + str(len(tasks)))
         return
-    ensure_write_window(dt.datetime.now(KST), monday)
+    ensure_write_window(dt.datetime.now(KST), monday, recovery=recovery)
     run_id = os.environ.get('GITHUB_RUN_ID', '')
     if not re.fullmatch(r'\d+', run_id):
         raise Stop('GitHub run identity is missing.')
@@ -753,7 +814,7 @@ def execute(now=None):
     if (committed.get('status') != 'committed' or verified.get('status') != 'committed'
             or verified.get('revision') != committed.get('revision') or verified.get('runId') != committed.get('runId')):
         raise Stop('Workboard commit readback failed; notice not scheduled.')
-    outcome = schedule_notice(api, bot, cfg, verified, monday, dt.datetime.now(KST))
+    outcome = schedule_notice(api, bot, cfg, verified, monday, dt.datetime.now(KST), recovery=recovery)
     print('PASS: Board commit verified; notice ' + outcome + '. Actual future delivery is not yet verified.')
 
 

@@ -15,6 +15,27 @@ def stamp(day, hour=12):
 
 
 class BoardTests(unittest.TestCase):
+    def test_large_source_pool_is_batched_without_omitting_or_splitting_threads(self):
+        sources = {str(n): {'channel_id': 'CTEST', 'thread_ts': str(n), 'messages': [{'text': '가' * 70000}]}
+                   for n in range(5)}
+        batches = board.source_batches(sources, [], self.cfg, {'start':'2026-10-19','end':'2026-10-25'})
+        self.assertGreater(len(batches), 1)
+        self.assertEqual([k for b in batches for k in b], list(sources))
+        self.assertTrue(all(source is sources[k] for b in batches for k, source in b.items()))
+        with self.assertRaises(board.Stop):
+            board.source_batches({'large': {'messages':[{'text':'가'*250000}]}}, [], self.cfg, {})
+
+    def test_approved_recovery_is_explicit_date_bound_and_does_not_change_normal_manual_mode(self):
+        now = dt.datetime(2026,10,26,9,15,tzinfo=board.KST)
+        env = dict(GITHUB_EVENT_NAME='workflow_dispatch', BOARD_PHASE='recover', BOARD_ENABLED='true',
+                   PUBLISH='true', BOARD_RECOVERY_DATE='2026-10-26')
+        self.assertTrue(board.publication_enabled(env, now))
+        self.assertFalse(board.publication_enabled(dict(env, BOARD_PHASE='validate'), now))
+        self.assertFalse(board.publication_enabled(dict(env, BOARD_RECOVERY_DATE='2026-10-19'), now))
+        self.assertFalse(board.publication_enabled(env, now.replace(hour=10)))
+        with self.assertRaises(board.Stop):
+            board.ensure_write_window(now, now.date())
+        board.ensure_write_window(now, now.date(), recovery=True)
     def test_large_evidence_pool_stays_below_structured_output_enum_limit(self):
         source={'messages':[{'evidence_id':'E'+str(n)} for n in range(1200)]}
         schema=board.board_schema({'synthetic-thread':source},[],self.cfg)
