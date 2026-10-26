@@ -7,6 +7,18 @@ import weekly_report as r
 
 
 class AccuracyTests(unittest.TestCase):
+    def test_early_runner_waits_without_advancing_cutoff_or_repeating_a_late_wait(self):
+        now = dt.datetime(2026,10,26,8,42,tzinfo=r.KST)
+        with patch.object(r.time,'sleep') as pause:
+            r.wait_for_nominal(now,'30 23 * * 0')
+            pause.assert_called_once_with(18*60)
+        with patch.object(r.time,'sleep') as pause:
+            r.wait_for_nominal(now.replace(hour=9),'30 23 * * 0')
+            r.wait_for_nominal(now,'')
+            pause.assert_not_called()
+        with self.assertRaises(r.Stop):
+            r.wait_for_nominal(now,'30 7 * * 5')
+
     def setUp(self):
         p = patch.multiple(r, CHANNEL='CTEST', BOT='UBOT', WORKSPACE='https://example.slack.com')
         p.start()

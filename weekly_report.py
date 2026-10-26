@@ -772,6 +772,23 @@ def report_period(now, mode, dry):
     return monday, day, friday, nominal
 
 
+def wait_for_nominal(now, schedule):
+    """Let an early runner be ready before the nominal time; preserve cutoff."""
+    early = {'30 23 * * 0': (0, 9), '30 7 * * 5': (4, 17)}
+    if schedule not in early:
+        return
+    weekday, hour = early[schedule]
+    if now.weekday() != weekday:
+        raise Stop('Early scheduled report is on the wrong local day.')
+    nominal = dt.datetime.combine(now.date(), dt.time(hour), KST)
+    delay = max(0, (nominal - now).total_seconds())
+    if delay > 1800:
+        raise Stop('Early report wait exceeds thirty minutes.')
+    if delay:
+        print('Early runner ready; waiting for the unchanged nominal report cutoff.', flush=True)
+        time.sleep(delay)
+
+
 MONDAY_ENCOURAGEMENTS = (
     '새로운 한 주가 시작됐습니다. 이번 주 디자인 업무와 주요 일정을 공유드립니다.\n함께 우선순위를 맞추며 차근차근 진행해 봐요. 이번 주도 잘 부탁드립니다 🙂',
     '좋은 월요일입니다. 이번 주 함께 진행할 업무를 정리했습니다.\n일정이나 도움이 필요한 부분은 편하게 나눠주세요. 서로 힘을 보태며 한 주를 시작해 봐요 🙂',
@@ -827,6 +844,8 @@ def main():
         raise Stop('Required GitHub Secret missing: REPORT_POLICY')
     if not all((CHANNEL, BOT, TEAM)) or not re.fullmatch(r'https://[a-zA-Z0-9-]+\.slack\.com', WORKSPACE):
         raise Stop('Required Slack configuration variables missing or invalid.')
+    now = dt.datetime.now(KST)
+    wait_for_nominal(now, os.environ.get('REPORT_SCHEDULE', ''))
     now = dt.datetime.now(KST)
     mode = os.environ.get('REPORT_MODE', 'auto')
     dry = os.environ.get('PUBLISH', 'false') != 'true'

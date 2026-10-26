@@ -108,6 +108,10 @@ Partial completions and waiting deliverables are separate.
 ## Reliability
 
 GitHub scheduled runs can be delayed; this is not an exact-time SLA. Posting is
+prepared by an additional runner thirty minutes before the nominal time, which
+waits until the original cutoff before collecting sources. The nominal schedule
+remains as a backup; completed-report detection prevents a second publication.
+Neither schedule changes the Monday 09:00 / Friday 17:00 source cutoff. Posting is
 allowed only within two hours of the nominal time on the correct day. Missed
 windows fail closed. No recurring catch-up or automatic cross-day posting.
 
