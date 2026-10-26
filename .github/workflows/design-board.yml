@@ -7,8 +7,16 @@ on:
       phase:
         description: Read-only connection check or source validation
         type: choice
-        options: [preflight, validate]
+        options: [preflight, validate, recover]
         default: preflight
+      recovery_date:
+        description: Explicit Monday ISO date for an owner-approved one-run recovery before 10am KST
+        type: string
+        default: ''
+      publish:
+        description: Publish approved recovery (also requires a server grant for this exact run)
+        type: boolean
+        default: false
 permissions:
   contents: read
   id-token: write
@@ -29,8 +37,9 @@ jobs:
       - name: Collect, validate, and update the Monday board
         env:
           BOARD_PHASE: ${{ github.event_name == 'schedule' && 'validate' || inputs.phase || 'preflight' }}
+          BOARD_RECOVERY_DATE: ${{ inputs.recovery_date || '' }}
           BOARD_ENABLED: ${{ vars.BOARD_ENABLED }}
-          PUBLISH: ${{ github.event_name == 'schedule' && vars.BOARD_ENABLED == 'true' && 'true' || 'false' }}
+          PUBLISH: ${{ vars.BOARD_ENABLED == 'true' && (github.event_name == 'schedule' || (inputs.phase == 'recover' && inputs.publish == true)) && 'true' || 'false' }}
           WORKBOARD_URL: ${{ vars.WORKBOARD_URL }}
           BOARD_CONFIG: ${{ secrets.BOARD_CONFIG }}
           SLACK_USER_TOKEN: ${{ secrets.SLACK_USER_TOKEN }}
