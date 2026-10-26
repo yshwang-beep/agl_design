@@ -683,7 +683,7 @@ def schedule_notice(api, bot, cfg, state, monday, now, recovery=False):
         raise Stop('Notice destination must be a configured public channel.')
     text = notice_text(cfg, state['period'], api.base)
     if recovery:
-        text = '※ 예약 자동화 오류를 복구해 지연 안내드립니다.\n\n' + text
+        text = '※ 갱신 시간 제한으로 게시가 지연되었습니다.\n\n' + text
     pending = bot.pages('chat.scheduledMessages.list', {'channel': channel,
                         'oldest': str(post_at - 1), 'latest': str(post_at + 1)}, 'scheduled_messages')
     matches = [m for m in pending if m.get('text') == text and int(m.get('post_at', 0)) == post_at]
