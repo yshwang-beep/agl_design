@@ -1,7 +1,9 @@
 name: Weekly design report
 on:
   schedule:
+    - cron: '30 23 * * 0'
     - cron: '0 0 * * 1'
+    - cron: '30 7 * * 5'
     - cron: '0 8 * * 5'
   workflow_dispatch:
     inputs:
@@ -32,8 +34,8 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'schedule' &&
-      ((github.event.schedule == '0 0 * * 1' && vars.MONDAY_REPORTS_ENABLED == 'true') ||
-      (github.event.schedule == '0 8 * * 5' && vars.FRIDAY_REPORTS_ENABLED == 'true')))
+      (((github.event.schedule == '0 0 * * 1' || github.event.schedule == '30 23 * * 0') && vars.MONDAY_REPORTS_ENABLED == 'true') ||
+      ((github.event.schedule == '0 8 * * 5' || github.event.schedule == '30 7 * * 5') && vars.FRIDAY_REPORTS_ENABLED == 'true')))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -57,12 +59,13 @@ jobs:
           SLACK_GROUP_MENTION: ${{ vars.SLACK_GROUP_MENTION }}
           SLACK_WORKSPACE_URL: ${{ vars.SLACK_WORKSPACE_URL }}
           REPORT_MODE: ${{ inputs.mode || 'auto' }}
+          REPORT_SCHEDULE: ${{ github.event_name == 'schedule' && github.event.schedule || '' }}
           REFORMAT_EXISTING: ${{ inputs.reformat_existing == true && 'true' || 'false' }}
           CORRECT_EXISTING_DATE: ${{ inputs.correct_existing_date || '' }}
           PUBLISH: >-
             ${{ ((github.event_name == 'schedule' &&
-            ((github.event.schedule == '0 0 * * 1' && vars.MONDAY_REPORTS_ENABLED == 'true') ||
-            (github.event.schedule == '0 8 * * 5' && vars.FRIDAY_REPORTS_ENABLED == 'true'))) ||
+            (((github.event.schedule == '0 0 * * 1' || github.event.schedule == '30 23 * * 0') && vars.MONDAY_REPORTS_ENABLED == 'true') ||
+            ((github.event.schedule == '0 8 * * 5' || github.event.schedule == '30 7 * * 5') && vars.FRIDAY_REPORTS_ENABLED == 'true'))) ||
             (github.event_name == 'workflow_dispatch' && inputs.publish == true &&
             ((inputs.mode == 'monday' && vars.MONDAY_REPORTS_ENABLED == 'true') ||
             (inputs.mode == 'friday' && vars.FRIDAY_REPORTS_ENABLED == 'true')))) && 'true' || 'false' }}
