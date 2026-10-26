@@ -15,6 +15,17 @@ def stamp(day, hour=12):
 
 
 class BoardTests(unittest.TestCase):
+    def test_summary_receives_corrected_link_and_full_current_baseline(self):
+        baseline={'id':'existing','title':'합성 업무','owner':'수정 담당','localEdited':True,
+                  'link':'https://example.slack.com/archives/CTEST/p1792722090384809',
+                  'issue':'변경된 범위','next':'변경된 후속 작업','decision':'변경된 요청',
+                  'due':'2026-11-04','dueNote':'합의 일정','reviewed':'yes'}
+        response={'status':'completed','output':[{'content':[{'type':'output_text','text':'{"items":[]}'}]}]}
+        with patch.dict(os.environ,{'OPENAI_API_KEY':'synthetic'}), patch.object(board,'http_json',return_value=response) as request:
+            board.summarize_batch(self.sources,[baseline],self.cfg,self.period)
+        existing=json.loads(request.call_args.args[2]['input'])['context']['existing'][0]
+        self.assertEqual(existing,baseline)
+
     def test_unverifiable_row_does_not_block_valid_rows_or_invent_roles_dates_or_completion(self):
         import copy
         bad = copy.deepcopy(self.item)
