@@ -9,12 +9,13 @@ import weekly_report as r
 class AccuracyTests(unittest.TestCase):
     def test_correction_refreshes_recipients_without_changing_report_body(self):
         old = r.TITLE + '\n<!subteam^STEAM> <@UOLD|old> <@UKEEP>\n\nBody\n*제외:* 타 Slack 채널 요청 디자인 프로젝트 건'
-        with patch.object(r, 'GROUP', '<!subteam^STEAM> <@UKEEP>'):
-            result = r.updated_introduction(old)
-        self.assertNotIn('<@UOLD', result)
-        self.assertEqual(result.splitlines()[1], '<!subteam^STEAM> <@UKEEP>')
-        self.assertIn('\n\nBody\n', result)
-        self.assertIn('*제외: 타 Slack 채널 요청 디자인 프로젝트 건*', result)
+        for text in (old, old.replace('📌', ':pushpin:')):
+            with patch.object(r, 'GROUP', '<!subteam^STEAM> <@UKEEP>'):
+                result = r.updated_introduction(text)
+            self.assertNotIn('<@UOLD', result)
+            self.assertEqual(result.splitlines()[1], '<!subteam^STEAM> <@UKEEP>')
+            self.assertIn('\n\nBody\n', result)
+            self.assertIn('*제외: 타 Slack 채널 요청 디자인 프로젝트 건*', result)
 
     def test_correction_does_not_replace_mentions_inside_prose(self):
         old = r.TITLE + '\nPlease ask <@UOLD> about this task.\nBody'

@@ -769,7 +769,8 @@ def updated_introduction(text):
                         '*제외: 타 Slack 채널 요청 디자인 프로젝트 건*')
     lines = text.split('\n')
     token = r'<(?:@U[A-Z0-9]+(?:\|[^>\n]*)?|!subteam\^[A-Z0-9]+(?:\|[^>\n]*)?)>'
-    if len(lines) > 1 and lines[0] == TITLE and re.fullmatch(r'(?:' + token + r'[ \t]*)+', lines[1]):
+    titles = {TITLE, TITLE.replace('📌', ':pushpin:')}
+    if len(lines) > 1 and lines[0] in titles and re.fullmatch(r'(?:' + token + r'[ \t]*)+', lines[1]):
         lines[1] = GROUP
     return '\n'.join(lines)
 
