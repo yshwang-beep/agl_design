@@ -195,7 +195,7 @@ RULES = '''Slack 원문을 근거로 한국어 디자인 업무 보고를 작성
 직접 요청/명시적 배정만 역할 근거다. 멘션/cc/반응은 배정이나 완료 근거가 아니다.
 요청자, 작업자, 마감, 착수, 상태가 불명확하면 확인 필요. 사용자는 <@ID>로 표시 가능.
 디자인 산출물과 MD 게시/상품 셋팅은 별개 단계다. 최종 디자인/HTML 전달 완료는 디자인 완료다.
-후속 게시 시점 확인만 남았다고 완료한 디자인을 미완료로 바꾸지 않는다. 후속 단계는 상태에 따로 명시한다.
+후속 게시 시점 확인만 남았다고 완료한 디자인을 미완료로 바꾸지 않는다. 명시적으로 요청된 미완료 게시·적용 후속은 별도 행으로 표시하고 디자인 완료 사실을 상태에 명시한다.
 1차 시안 전달만으로 최종 완료라 하지 않는다. 이후 실제 디자인 수정 요청이 있으면 그 수정 범위만 열린 업무다.
 원문부터 마지막 댓글까지 시간순으로 읽고, 마지막 명시적 배정/합의 일정/수정 완료를 적용한다.
 공동 작업자는 모두 표시하고, 주차/산출물별 담당자·일정이 다르면 행을 분리한다.
@@ -207,6 +207,11 @@ done=완료 업무: 대상 기간에 해당 디자인 산출물의 작업·최�
 coordination=보류·확인 필요 업무: 명시적 보류 또는 자료·요청 범위·담당·일정 미확정으로 다음 진행을 기다리는 업무.
 제작이 진행 중인 업무에 확인 질문이 있다는 이유만으로 전체를 보류로 바꾸지 않는다. 실제 중단/진행 대기 범위를 구분한다.
 이미 완료한 부분과 아직 자료를 기다리는 잔여 산출물은 분리한다. 진행 예정과 진행 중을 중요도로 섞지 않는다.
+한 스레드의 모든 산출물·주차·차수를 먼저 열거하고 각각 판정한다. 일부 산출물 완료를 스레드 전체 완료로 확대하지 않는다.
+사전 이벤트 완료는 본 행사/2차/후속 주차 완료 근거가 아니다. 시안 공유와 최종 구현·HTML 전달도 해당 범위별로 구분한다.
+후속 일정이 있는 산출물은 그 산출물 자체의 완료 근거가 없으면 열린 업무로 남긴다. 완료 행의 상태 문구에 잔여 작업을 숨기지 않는다.
+월요일에도 완료 산출물을 done 행으로 먼저 반환하되, 같은 스레드의 미완료 산출물은 반드시 별도 행으로 반환한다. 완료 제외는 코드가 수행한다.
+최종 댓글의 짧은 완료·승인도 해당 범위에 적용한다. 중간의 미확인·대기 문구가 이후 해소되었으면 되살리지 않는다.
 금요일에는 이번 주 월요일부터 조회 마감까지 관련 열린 업무와 이번 주 완료 업무를 보고한다.
 월요일에는 최근14일과 이전 미완료 후속 중 열린 업무만 보고한다. 완료 업무는 완료 기간에 관계없이 제외한다.
 월요일 구역은 진행 중/진행 예정/보류·확인 필요 세 가지뿐이며 완료 제목이나 빈 완료 표도 만들지 않는다.
@@ -267,6 +272,31 @@ def summarize(sources, context):
 def completion_window(monday, friday):
     return (monday, monday + dt.timedelta(days=4)) if friday else (
         monday - dt.timedelta(days=7), monday - dt.timedelta(days=1))
+
+
+def summarize_by_thread(sources, context):
+    """Review each complete chronology independently before combining rows.
+
+    A busy/completed project must not displace the open scopes in other threads.
+    Keep done rows until grounding so Monday filtering cannot hide sibling work.
+    """
+    result = []
+    for root, messages in sources.items():
+        if not messages:
+            continue
+        isolated = {root: messages}
+        draft = summarize(isolated, context)
+        audit = dict(context, audit_draft=draft, audit_instruction=(
+            ' 원문 전체의 산출물·주차·차수를 전수 대조하여 누락을 복원하라. '
+            '사전/본 행사, 1차/2차, 부분 완료/추가 수정, 자료 대기/제작을 분리하라. '
+            '마지막 댓글의 완료는 지칭된 산출물에만 적용한다. '
+            '모든 완료 행과 열린 행을 포함한 전체 items를 반환하라. '
+            '실제 작업 요청이 없는 단순 공지·감사글만 빈 배열로 반환한다.'))
+        checked = summarize(isolated, audit)
+        if any(item['thread_ts'] != root for item in checked):
+            raise Stop('Per-thread audit returned an unrelated source.')
+        result.extend(checked)
+    return result
 
 
 def explicit_completion(text):
@@ -751,6 +781,15 @@ def reviewed_correction(parent, day, monday, friday, cutoff, dry):
                          if not m.get('bot_id') and float(m['ts']) <= cutoff.timestamp()]
     validate(items, sources, monday, friday)
     replace_details(parent, render(items, monday, friday), dry)
+    old = '*제외:* 타 Slack 채널 요청 디자인 프로젝트 건'
+    new = '*제외: 타 Slack 채널 요청 디자인 프로젝트 건*'
+    intro = parent.get('text', '').replace(old, new)
+    if not dry and intro != parent.get('text', ''):
+        slack('chat.update', {'channel': CHANNEL, 'ts': parent['ts'], 'text': intro,
+              'unfurl_links': False, 'unfurl_media': False}, write=True)
+        readback = thread(parent['ts'], str(time.time()))
+        if not readback or readback[0].get('text') != intro:
+            raise Stop('Corrected introduction differs on readback.')
 
 
 def report_period(now, mode, dry):
@@ -833,7 +872,7 @@ def introduction(start, cutoff, day, friday):
         + '*대상:* ' + target + ' ' + start.strftime('%Y.%m.%d') + ('(월)' if friday else '')
         + '~' + cutoff.strftime('%Y.%m.%d') + ('(금)' if friday else '')
         + scope + cutoff.strftime('%m/%d %H:%M') + '까지의 관련 스레드\n'
-        + '*제외:* 타 Slack 채널 요청 디자인 프로젝트 건\n*판정:* 담당자·완료 여부 불명확 → *확인 필요*로 표시')
+        + '*제외: 타 Slack 채널 요청 디자인 프로젝트 건*\n*판정:* 담당자·완료 여부 불명확 → *확인 필요*로 표시')
 
 
 def main():
@@ -883,13 +922,7 @@ def main():
                'completion_start': completion_window(monday, friday)[0].isoformat(),
                'completion_end': completion_window(monday, friday)[1].isoformat(), 'people': people()}
     for attempt in range(2):
-        items = summarize(sources, context)
-        if attempt == 0:
-            # Independently recheck the full chronology, with the first draft as
-            # a hypothesis rather than a source. No generated row is evidence.
-            audit = dict(context, audit_draft=items,
-                         audit_instruction='원문과 마지막 댓글을 다시 대조하라. 완료 단계, 공동 담당, 최종 합의 일정, 중복·누락을 전수 검증하고 수정한 전체 items를 반환하라.')
-            items = summarize(sources, audit)
+        items = summarize_by_thread(sources, context)
         ground_uncertain_roles(items, sources)
         try:
             items = ground_uncertain_completions(items, sources, monday, friday)

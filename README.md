@@ -98,8 +98,10 @@ Partial completions and waiting deliverables are separate.
   the report completion window. Bot receipts cannot reopen prior completions.
 - Broadcast replies resolve to their original request. Full paginated replies
   are read chronologically, latest explicit assignments and accepted schedules
-  take precedence, and multiple workers are supported. A second model pass
-  audits the draft against the original sources before publication.
+  take precedence, and multiple workers are supported. Each complete source thread
+  is extracted and audited independently before combining rows. Separate phases,
+  deliverables and weeks remain open until their own completion is confirmed.
+  Monday completion filtering follows this scope review.
 - `BOARD_CONFIG` is optionally reused as a private verified people directory.
   Unique names in assignment sentences can resolve to configured Slack users.
 - Only the designated channel is read. Notion board updates, personal briefings

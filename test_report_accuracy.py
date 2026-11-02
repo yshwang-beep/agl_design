@@ -7,6 +7,34 @@ import weekly_report as r
 
 
 class AccuracyTests(unittest.TestCase):
+    def test_each_thread_is_reviewed_and_partial_completion_keeps_open_scopes(self):
+        sources = {'1.000001': [{'text': 'pre-event complete; main event next week'}],
+                   '2.000001': [{'text': 'thumbnail changes pending'}]}
+        done = dict(thread_ts='1.000001', task='pre-event', section='done')
+        active = dict(thread_ts='1.000001', task='main event', section='main')
+        pending = dict(thread_ts='2.000001', task='thumbnail', section='coordination')
+        with patch.object(r, 'summarize', side_effect=[[done], [done, active], [pending], [pending]]) as model:
+            items = r.summarize_by_thread(sources, {'mode': 'monday'})
+        self.assertEqual(items, [done, active, pending])
+        self.assertEqual(model.call_count, 4)
+        self.assertEqual(list(model.call_args_list[0].args[0]), ['1.000001'])
+        self.assertEqual(list(model.call_args_list[2].args[0]), ['2.000001'])
+        self.assertEqual(model.call_args_list[1].args[1]['audit_draft'], [done])
+
+    def test_thread_audit_cannot_import_a_different_source(self):
+        with patch.object(r, 'summarize', side_effect=[[], [dict(thread_ts='2.000001')]]):
+            with self.assertRaises(r.Stop):
+                r.summarize_by_thread({'1.000001': [{'text': 'request'}]}, {})
+
+    def test_entire_exclusion_sentence_is_emphasized_in_both_modes(self):
+        monday = dt.date(2026, 11, 2)
+        start = dt.datetime(2026, 10, 19, tzinfo=r.KST)
+        cutoff = dt.datetime(2026, 11, 2, 9, tzinfo=r.KST)
+        for friday in (False, True):
+            intro = r.introduction(start, cutoff, monday, friday)
+            self.assertIn('*제외: 타 Slack 채널 요청 디자인 프로젝트 건*', intro)
+            self.assertNotIn('*제외:*', intro)
+
     def test_early_runner_waits_without_advancing_cutoff_or_repeating_a_late_wait(self):
         now = dt.datetime(2026,10,26,8,42,tzinfo=r.KST)
         with patch.object(r.time,'sleep') as pause:
