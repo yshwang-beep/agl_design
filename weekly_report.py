@@ -763,6 +763,17 @@ def correction_period(now, mode, value):
     return day - dt.timedelta(days=day.weekday()), day, mode == 'friday', cutoff
 
 
+def updated_introduction(text):
+    """Apply current recipient configuration when repairing an existing report."""
+    text = text.replace('*제외:* 타 Slack 채널 요청 디자인 프로젝트 건',
+                        '*제외: 타 Slack 채널 요청 디자인 프로젝트 건*')
+    lines = text.split('\n')
+    token = r'<(?:@U[A-Z0-9]+(?:\|[^>\n]*)?|!subteam\^[A-Z0-9]+(?:\|[^>\n]*)?)>'
+    if len(lines) > 1 and lines[0] == TITLE and re.fullmatch(r'(?:' + token + r'[ \t]*)+', lines[1]):
+        lines[1] = GROUP
+    return '\n'.join(lines)
+
+
 def reviewed_correction(parent, day, monday, friday, cutoff, dry):
     # Reviewed rows are private secret data, never workflow inputs or public files.
     try:
@@ -781,9 +792,7 @@ def reviewed_correction(parent, day, monday, friday, cutoff, dry):
                          if not m.get('bot_id') and float(m['ts']) <= cutoff.timestamp()]
     validate(items, sources, monday, friday)
     replace_details(parent, render(items, monday, friday), dry)
-    old = '*제외:* 타 Slack 채널 요청 디자인 프로젝트 건'
-    new = '*제외: 타 Slack 채널 요청 디자인 프로젝트 건*'
-    intro = parent.get('text', '').replace(old, new)
+    intro = updated_introduction(parent.get('text', ''))
     if not dry and intro != parent.get('text', ''):
         slack('chat.update', {'channel': CHANNEL, 'ts': parent['ts'], 'text': intro,
               'unfurl_links': False, 'unfurl_media': False}, write=True)
