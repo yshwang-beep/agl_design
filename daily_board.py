@@ -86,6 +86,22 @@ def draft(sources, active, cfg, period, start, end):
     return tasks, note
 
 
+def collapse_daily_tasks(tasks):
+    """One latest evidenced draft per exact existing ID or new deliverable identity."""
+    grouped = {}
+    for task in tasks:
+        key = ('existing', task['sourceTaskId']) if task.get('sourceTaskId') else ('new', ' '.join(task['title'].split()), task.get('link') or task['evidence'][0]['url'])
+        prior = grouped.get(key)
+        if prior is None:
+            grouped[key] = task
+            continue
+        latest = max((prior, task), key=lambda row: max(float(e['ts']) for e in row['evidence']))
+        evidence = {(e['channelId'], e['ts']): e for row in (prior, task) for e in row['evidence']}
+        grouped[key] = dict(latest, evidence=sorted(evidence.values(), key=lambda e: float(e['ts']))[-200:],
+                            reviewed='no', verification='여러 근거의 최신 내용 기준 · 원문 확인 필요')
+    return list(grouped.values())
+
+
 def execute(now=None):
     now = now or dt.datetime.now(board.KST)
     cfg = board.config_from_env()
@@ -140,6 +156,13 @@ def execute(now=None):
             print('PASS: Existing daily record reused: ' + date_string, flush=True)
             continue
         snapshot = api.call('baseline' if backfill else 'snapshot')
+        if backfill and snapshot.get('pendingCommit'):
+            result = api.call('commit', snapshot['pendingCommit'])
+            verified = api.call('status')
+            if verified.get('status') != 'committed' or verified.get('revision') != result.get('revision'):
+                raise board.Stop('Resumed historical record readback failed.')
+            print('PASS: Daily record saved and verified: ' + date_string + '; rows=' + str(verified['rowCount']), flush=True)
+            continue
         start, end = window(date, snapshot, backfill)
         active = snapshot['activeTasks']
         user = shared_user or board.Slack(os.environ['SLACK_USER_TOKEN'], 'user')
@@ -149,6 +172,7 @@ def execute(now=None):
         sources, coverage = board.collect_sources(user, cfg, snapshot, start, end)
         period = {'start': start.date().isoformat(), 'end': end.date().isoformat()}
         tasks, note = draft(sources, active, cfg, period, start, end)
+        tasks = collapse_daily_tasks(tasks)
         if not publish:
             print('PASS: Daily draft validated without writes: ' + date_string + '; tasks=' + str(len(tasks)), flush=True)
             continue
