@@ -4,8 +4,39 @@ import os
 import re
 import sys
 import time
+import copy
 
 import board_weekly as board
+
+
+class AsOfSlack(board.Slack):
+    """Reuse channel reads for four cutoffs, never later text in an earlier view."""
+    def __init__(self, token, latest):
+        super().__init__(token, 'user')
+        self.latest, self.page_cache, self.info_cache = latest, {}, {}
+
+    def call(self, method, params=None, write=False):
+        if not write and method in {'auth.test', 'conversations.info'}:
+            key = (method, str(sorted((params or {}).items())))
+            if key not in self.info_cache:
+                self.info_cache[key] = super().call(method, params)
+            return copy.deepcopy(self.info_cache[key])
+        return super().call(method, params, write)
+
+    def pages(self, method, params, key='messages', max_pages=1000):
+        requested = params.get('latest')
+        maximum = dict(params)
+        if requested is not None:
+            if float(requested) > float(self.latest):
+                raise board.Stop('Historical source cutoff exceeds the shared read cutoff.')
+            maximum['latest'] = self.latest
+        cache_key = (method, str(sorted(maximum.items())), key, max_pages)
+        if cache_key not in self.page_cache:
+            self.page_cache[cache_key] = super().pages(method, maximum, key, max_pages)
+        rows = self.page_cache[cache_key]
+        if requested is not None:
+            rows = [row for row in rows if float(row['ts']) <= float(requested)]
+        return copy.deepcopy(rows)
 
 
 class DailyAPI(board.BoardAPI):
@@ -69,7 +100,7 @@ def execute(now=None):
         if not 1 <= len(values) <= 4 or len(set(values)) != len(values):
             raise board.Stop('Select one to four distinct backfill dates.')
         try:
-            dates = sorted(dt.date.fromisoformat(v) for v in values)
+            dates = sorted((dt.date.fromisoformat(v) for v in values), reverse=True)
         except ValueError:
             raise board.Stop('Invalid backfill dates.') from None
         if any(d > now.date() or d < now.date() - dt.timedelta(days=14) for d in dates):
@@ -90,6 +121,7 @@ def execute(now=None):
             time.sleep(10)
         else:
             raise board.Stop('Historical-record grant was not provisioned.')
+    shared_user = AsOfSlack(os.environ['SLACK_USER_TOKEN'], format(dt.datetime.combine(max(dates), dt.time(7), board.KST).timestamp() - .000001, '.6f')) if backfill else None
     for date in dates:
         date_string = date.isoformat()
         api = DailyAPI(os.environ['WORKBOARD_URL'], date_string, publish, backfill)
@@ -110,7 +142,7 @@ def execute(now=None):
         snapshot = api.call('baseline' if backfill else 'snapshot')
         start, end = window(date, snapshot, backfill)
         active = snapshot['activeTasks']
-        user = board.Slack(os.environ['SLACK_USER_TOKEN'], 'user')
+        user = shared_user or board.Slack(os.environ['SLACK_USER_TOKEN'], 'user')
         identity = user.call('auth.test')
         if identity.get('team_id') != cfg['team_id'] or identity.get('bot_id'):
             raise board.Stop('Unexpected collection identity.')
