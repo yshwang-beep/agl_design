@@ -1,3 +1,30 @@
+# Daily design workboard (current, 2026-11-05)
+
+The workboard now collects Slack channel evidence every day at **07:00 Asia/Seoul**
+(22:00 UTC). GitHub scheduling can be delayed. This replaces the Monday-only
+collection described in the historical notes below.
+
+- `daily_board.py` is the workflow entry point. Normal scheduled commits are
+  accepted only from 07:00 until 08:30 KST, after complete collection and validation.
+- Each successful day stores an immutable 07:00 record. Current task IDs, human
+  changes, manually corrected links, and old weekly records are preserved.
+- The next collection continues after the last successful daily source cutoff;
+  the initial collection reads seven days. No new evidence alone resets a status.
+- One dashboard calendar supports a day, a typed start/end range, and retained
+  weekly records. A range shows each original task once, using its last saved state.
+  Historical views are read-only; current work remains editable.
+- Monday's 09:00 notice is scheduled only after the daily commit is verified.
+  Friday reports and the paused legacy Monday lab report are separate workflows.
+- Manual `preflight`/`validate` remain read-only. Explicit `backfill` can create
+  only isolated historical records, never edit the live board or send Slack.
+  A short-lived server grant must name the exact run and up to four dates.
+- Historical reconstruction rewinds saved changes before 07:00 and filters Slack
+  messages and edits at each cutoff. Records are labeled as reconstructed, not as
+  actual past scheduled executions. Shared in-memory reads do not allow later
+  messages into an earlier cutoff. No raw source data is stored in CI artifacts.
+
+## Historical Monday-only implementation notes
+
 # Monday workboard automation
 
 This workflow collects channel evidence, validates a weekly draft, preserves the
