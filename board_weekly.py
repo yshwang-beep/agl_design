@@ -700,7 +700,10 @@ def notice_text(cfg, period, board_url):
         os.environ.get('SLACK_GROUP_MENTION', ''))))
     if not mentions and cfg.get('group_id'):
         mentions = '<!subteam^' + cfg['group_id'] + '>'
-    group = '\n' + mentions if mentions else ''
+    primary = ' '.join(re.findall(r'<!subteam\^[A-Z0-9]+(?:\|[^>]+)?>', mentions))
+    copied = ' '.join(re.findall(r'<@[A-Z0-9]+>', mentions))
+    recipients = primary + (' (cc. ' + copied + ')' if copied else '')
+    group = '\n' + recipients.strip() if recipients else ''
     return ('*[디자인팀 주간 업무 보고] 담당별 업무 현황 대시보드 점검 안내*' + group
             + '\n\n주간 업무 보고를 위한 *담당별 업무 현황 대시보드가 업데이트되었습니다.*'
             '\n\n주간 보고 전, 담당 업무의 진행 현황 및 보고 내용에 누락·오류가 없는지 확인하고 필요한 사항을 수정해 주세요.'
