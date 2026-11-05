@@ -304,7 +304,9 @@ def collect_sources(slack, cfg, snapshot, start, end):
             root_stamp = messages[0].get('thread_ts', messages[0].get('ts', stamp))
             processed.add((channel_id, stamp))
             processed.update((channel_id, alias) for alias in aliases.get(stamp, set()))
-            safe = [m for m in messages if float(m['ts']) < end.timestamp() and visible_message(m, cfg)]
+            safe = [m for m in messages if float(m['ts']) < end.timestamp()
+                    and float(m.get('edited', {}).get('ts', m['ts'])) < end.timestamp()
+                    and visible_message(m, cfg)]
             current = [m for m in safe if start.timestamp() <= float(m['ts']) < end.timestamp()]
             if not current or not relevant_thread(safe, cfg, core, keywords):
                 continue
