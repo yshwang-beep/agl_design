@@ -1,20 +1,20 @@
-name: Monday design workboard
+name: Daily design workboard
 on:
   schedule:
-    - cron: '30 22 * * 0'
+    - cron: '0 22 * * *'
   workflow_dispatch:
     inputs:
       phase:
         description: Read-only connection check or source validation
         type: choice
-        options: [preflight, validate, recover]
+        options: [preflight, validate, backfill]
         default: preflight
-      recovery_date:
-        description: Explicit Monday ISO date for an owner-approved one-run recovery before 10am KST
+      backfill_dates:
+        description: Explicit dates to reconstruct, comma-separated (requires an exact-run server grant)
         type: string
         default: ''
       publish:
-        description: Publish approved recovery (also requires a server grant for this exact run)
+        description: Publish approved historical records (requires a server grant for this exact run)
         type: boolean
         default: false
 permissions:
@@ -27,19 +27,19 @@ jobs:
   board:
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && vars.BOARD_ENABLED == 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 85
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
       - name: Offline safety checks
-        run: python3 -m unittest test_board_weekly.py test_weekly_report.py
+        run: python3 -m unittest test_board_weekly.py test_weekly_report.py test_daily_board.py
       - name: Collect, validate, and update the Monday board
         env:
           BOARD_PHASE: ${{ github.event_name == 'schedule' && 'validate' || inputs.phase || 'preflight' }}
-          BOARD_RECOVERY_DATE: ${{ inputs.recovery_date || '' }}
+          BACKFILL_DATES: ${{ inputs.backfill_dates || '' }}
           BOARD_ENABLED: ${{ vars.BOARD_ENABLED }}
-          PUBLISH: ${{ vars.BOARD_ENABLED == 'true' && (github.event_name == 'schedule' || (inputs.phase == 'recover' && inputs.publish == true)) && 'true' || 'false' }}
+          PUBLISH: ${{ vars.BOARD_ENABLED == 'true' && (github.event_name == 'schedule' || (inputs.phase == 'backfill' && inputs.publish == true)) && 'true' || 'false' }}
           WORKBOARD_URL: ${{ vars.WORKBOARD_URL }}
           BOARD_CONFIG: ${{ secrets.BOARD_CONFIG }}
           BOARD_NOTICE_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
@@ -58,5 +58,5 @@ jobs:
           config = json.loads(os.environ['BOARD_CONFIG'])
           config['notice_channel_id'] = os.environ['BOARD_NOTICE_CHANNEL_ID']
           os.environ['BOARD_CONFIG'] = json.dumps(config)
-          runpy.run_path('board_weekly.py', run_name='__main__')
+          runpy.run_path('daily_board.py', run_name='__main__')
           PYTHON
