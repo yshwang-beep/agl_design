@@ -42,10 +42,21 @@ jobs:
           PUBLISH: ${{ vars.BOARD_ENABLED == 'true' && (github.event_name == 'schedule' || (inputs.phase == 'recover' && inputs.publish == true)) && 'true' || 'false' }}
           WORKBOARD_URL: ${{ vars.WORKBOARD_URL }}
           BOARD_CONFIG: ${{ secrets.BOARD_CONFIG }}
+          BOARD_NOTICE_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
           SLACK_USER_TOKEN: ${{ secrets.SLACK_USER_TOKEN }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_GROUP_MENTION: ${{ vars.SLACK_GROUP_MENTION }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4.1' }}
           REPORT_POLICY: ${{ secrets.REPORT_POLICY }}
-        run: python3 board_weekly.py
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import runpy
+
+          config = json.loads(os.environ['BOARD_CONFIG'])
+          config['notice_channel_id'] = os.environ['BOARD_NOTICE_CHANNEL_ID']
+          os.environ['BOARD_CONFIG'] = json.dumps(config)
+          runpy.run_path('board_weekly.py', run_name='__main__')
+          PYTHON
