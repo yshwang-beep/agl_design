@@ -694,18 +694,22 @@ class BoardAPI:
 
 def notice_text(cfg, period, board_url):
     label = period['start'].replace('-', '.') + '–' + period['end'][5:].replace('-', '.')
-    # Work-channel notices notify the design group only; shared Lab reports
-    # keep their separately configured reviewer/CEO mentions unchanged.
+    # Use the configured design group and report recipients for the Lab notice.
     mentions = ' '.join(dict.fromkeys(re.findall(
-        r'<!subteam\^[A-Z0-9]+(?:\|[^>]+)?>',
+        r'<!subteam\^[A-Z0-9]+(?:\|[^>]+)?>|<@[A-Z0-9]+>',
         os.environ.get('SLACK_GROUP_MENTION', ''))))
     if not mentions and cfg.get('group_id'):
         mentions = '<!subteam^' + cfg['group_id'] + '>'
     group = '\n' + mentions if mentions else ''
-    return ('*디자인팀 주간 업무 취합 업데이트*' + group + '\n\n디자인팀 업무 취합 내용을 업데이트했습니다.\n'
-            '<' + board_url + '|담당별 업무 확인·수정>\n\n· 보고 기간: ' + label + '\n'
-            '· 10시 전까지 현재 상황·이슈, 다음 행동, 결정 요청을 확인·수정해 주세요.\n'
-            '· 오늘 10:00 팀 미팅에서 함께 확인합니다.\n· 해당 기간에 진행한 업무는 완료 건도 포함됩니다.')
+    return ('*[디자인팀 주간 업무 보고] 담당별 업무 현황 대시보드 점검 안내*' + group
+            + '\n\n주간 업무 보고를 위한 *담당별 업무 현황 대시보드가 업데이트되었습니다.*'
+            '\n\n주간 보고 전, 담당 업무의 진행 현황 및 보고 내용에 누락·오류가 없는지 확인하고 필요한 사항을 수정해 주세요.'
+            '\n\n• *보고 기간:* ' + label
+            + '\n• *수정 기한:* 금일 10:00 전까지'
+            '\n• *주요 점검 항목:* 업무 진행 현황, 주요 이슈, 다음 액션, 의사결정 요청 사항'
+            '\n• *확인 일정:* 금일 10:00 디자인팀 주간 업무 미팅'
+            '\n\n🔗 <' + board_url + '|담당별 업무 현황 대시보드 바로가기>'
+            '\n\n※ 보고 기간 내 진행한 업무는 완료 여부와 관계없이 리스트에 표시되며, 완료된 업무 또한 포함되어 있습니다.')
 
 
 def schedule_notice(api, bot, cfg, state, monday, now, recovery=False, review_note=''):
