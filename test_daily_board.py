@@ -5,6 +5,31 @@ import daily_board as daily
 
 
 class DailyTests(unittest.TestCase):
+    def test_shared_historical_reads_filter_future_messages_and_fetch_once(self):
+        client=daily.AsOfSlack('synthetic', '200.000000')
+        rows=[{'ts':'100.000000','text':'before'},{'ts':'150.000000','text':'later'}]
+        with patch.object(daily.board.Slack,'pages',return_value=rows) as read:
+            old=client.pages('conversations.history',{'channel':'CTEST','latest':'120.000000'})
+            new=client.pages('conversations.history',{'channel':'CTEST','latest':'180.000000'})
+            self.assertEqual([m['text'] for m in old],['before'])
+            self.assertEqual(len(new),2)
+            read.assert_called_once()
+            self.assertEqual(read.call_args.args[1]['latest'],'200.000000')
+            old[0]['text']='changed'
+            self.assertEqual(client.pages('conversations.history',{'channel':'CTEST','latest':'120.000000'})[0]['text'],'before')
+        with self.assertRaises(daily.board.Stop):
+            client.pages('conversations.history',{'latest':'201.000000'})
+
+    def test_duplicate_existing_sources_use_latest_facts_and_union_evidence(self):
+        first={'sourceTaskId':'original','title':'same','status':'진행 중','evidence':[{'channelId':'C123','ts':'100.000000','url':'old'}]}
+        last={**first,'status':'완료','evidence':[{'channelId':'C123','ts':'200.000000','url':'new'}]}
+        rows=daily.collapse_daily_tasks([last,first])
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0]['status'],'완료')
+        self.assertEqual(len(rows[0]['evidence']),2)
+        self.assertEqual(rows[0]['reviewed'],'no')
+        self.assertIn('원문 확인 필요',rows[0]['verification'])
+
     def test_window_is_seven_am_kst_and_continues_after_last_success(self):
         date = dt.date(2026, 11, 5)
         start, end = daily.window(date)
