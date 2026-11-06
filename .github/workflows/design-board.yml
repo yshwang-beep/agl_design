@@ -42,10 +42,10 @@ jobs:
           PUBLISH: ${{ vars.BOARD_ENABLED == 'true' && (github.event_name == 'schedule' || (inputs.phase == 'backfill' && inputs.publish == true)) && 'true' || 'false' }}
           WORKBOARD_URL: ${{ vars.WORKBOARD_URL }}
           BOARD_CONFIG: ${{ secrets.BOARD_CONFIG }}
-          BOARD_NOTICE_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
+          BOARD_NOTICE_CHANNEL_ID: 'C0AM4AC7WA3'
           SLACK_USER_TOKEN: ${{ secrets.SLACK_USER_TOKEN }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          SLACK_GROUP_MENTION: ${{ vars.SLACK_GROUP_MENTION }}
+          SLACK_GROUP_MENTION: '<!subteam^S09FW5GBM7G>'
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4.1' }}
           REPORT_POLICY: ${{ secrets.REPORT_POLICY }}
