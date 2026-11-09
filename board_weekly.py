@@ -1,5 +1,6 @@
 """Cloud-only Monday board collection. Never print source material or credentials."""
 import datetime as dt
+import difflib
 import json
 import os
 import re
@@ -8,6 +9,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import unicodedata
 from zoneinfo import ZoneInfo
 
 from weekly_report import Stop, explicit_completion, weekly_completion
@@ -344,6 +346,10 @@ BOARD_RULES = '''디자인팀 주간 업무판의 한국어 초안을 작성한�
 existing은 현재 서버에 저장된 업무의 연속 기준선이다. 수정된 근거 링크·담당·내용·일정·다음 행동을 기준으로 같은 업무를 이어간다. 초기 Slack 요청으로 리셋하지 않는다.
 localEdited=true의 수정 내용은 확정 기준이다. 새 원문과 다르면 기존 값을 덮어쓰지 말고 별도 확인 제안으로만 다룬다. 새 증거가 없다고 수정 내용을 지우거나 초기 배정으로 복원하지 않는다.
 동일 산출물의 내용이 중복되면 source_priority=primary인 디자인 랩방 원문과 전체 댓글을 상위 근거로 적용한다.
+랩방에 최초 요청이 있고 워크방에서 피드백·수정 요청·재공지·일정 안내가 이어지는 경우, 같은 산출물·회차라면 랩방 업무 한 건의 후속 내용으로 연결한다. 워크방 게시나 제목 변경만으로 신규 업무를 만들지 않는다.
+업무의 기준 출처·요청 범위·프로젝트 정체성은 랩방에 둔다. 워크방에서 더 늦게 게시됐다는 이유만으로 랩방의 확정 담당·범위·합의 일정을 덮어쓰지 않는다. 충돌은 확인 필요로 남긴다.
+워크방의 충돌 없는 실제 피드백·수정·전달 사실은 기존 업무의 현재 상황과 다음 행동에 반영한다. 단순 재공지로 진행 상태를 초기화하거나 완료 업무를 다시 열지 않는다.
+같은 프로젝트라도 배너·상세페이지·패키지처럼 산출물이 다르거나 별도 회차면 분리한다. 제목 유사성이나 같은 스레드만으로 합치지 않는다. 공동 작업은 담당자를 복수 표시한다.
 디자인 워크방은 내부 분장·실무 진행의 보조 근거다. 랩방의 최신 담당 변경·범위·합의 일정과 충돌하면 워크방의 이전 내용을 적용하지 않는다.
 워크방의 추가 사실이 랩방과 충돌하지 않으면 보완할 수 있으나 원래 랩방 근거 링크를 유지한다. 같은 업무를 채널별로 별도 생성하지 않는다.
 랩방에서 최신 인계가 확인되면 과거 분장 담당자는 제작 담당자가 아니라 조율·협업 역할로 구분한다.
@@ -508,6 +514,28 @@ def direct_role(fact, messages, directory=None):
                 and not re.search(r'부탁|요청', quote))
 
 
+def same_deliverable_title(left, right):
+    """Conservative rename check; a thread can contain several deliverables."""
+    if left.strip() == right.strip():
+        return True
+    def compact(value):
+        value = unicodedata.normalize('NFKC', value).casefold()
+        value = re.sub(r'제작|디자인|수정|배포|전달|공유|진행|작업', '', value)
+        return re.sub(r'[^\w]', '', value)
+    # Keep separately numbered reporting cycles and deliverable types separate.
+    for pattern in (r'\d+\s*월', r'\d+\s*주차'):
+        a, b = re.findall(pattern, left), re.findall(pattern, right)
+        if a and b and a != b:
+            return False
+    kinds = ('배너', '썸네일', '상세페이지', '패키지', '로고', '리플렛')
+    a, b = {k for k in kinds if k in left}, {k for k in kinds if k in right}
+    if a and b and not a.intersection(b):
+        return False
+    a, b = compact(left), compact(right)
+    return bool(a and b and (a == b or (min(len(a), len(b)) >= 5
+                and difflib.SequenceMatcher(None, a, b).ratio() >= .72)))
+
+
 def task_payloads(items, sources, active, cfg, start, end):
     directory = cfg['designers'] + cfg.get('collaborators', [])
     people = {p['id']: p['name'] for p in directory}
@@ -590,17 +618,22 @@ def task_payloads(items, sources, active, cfg, start, end):
                 raise Stop('Board explanation exceeds concise field limits.')
             fields[field] = '\n'.join('· ' + value.strip().lstrip('· ').strip() for value in item[field] if value.strip())
         source_id = item['sourceTaskId']
+        accepted_refs = {(source['channel_id'], source['thread_ts'])}
+        accepted_refs.update((source['channel_id'], stamp) for stamp in source.get('reference_aliases', []))
+        title = item['title'].strip()
+        if not source_id:
+            # Recover an omitted ID only for a unique, identical title and source.
+            matches = [t for t in active if t['title'].strip() == title
+                       and accepted_refs.intersection(source_references(t))]
+            if len(matches) == 1:
+                source_id = matches[0]['id']
         if source_id:
             old = existing.get(source_id)
-            accepted_refs = {(source['channel_id'], source['thread_ts'])}
-            accepted_refs.update((source['channel_id'], stamp) for stamp in source.get('reference_aliases', []))
-            if not old or not accepted_refs.intersection(source_references(old)) or item['title'].strip() != old['title'].strip():
-                # Never let an AI linkage overwrite another deliverable. Keep
-                # the evidenced item separate; the server preserves the old
-                # unfinished row and its human edits for explicit review.
-                source_id = ''
-                verification.append('기존 업무와의 연결 확인 필요 · 이전 업무 기록 보존')
-        title = item['title'].strip()
+            if not old or not accepted_refs.intersection(source_references(old)) or not same_deliverable_title(title, old['title'].strip()):
+                # Repair the proposed association; never manufacture another row
+                # alongside the existing unfinished task when linkage fails.
+                raise Stop('Existing task linkage requires source and deliverable verification.')
+            title = old['title'].strip()
         if SENSITIVE.search('\n'.join([title, item['dueNote']] + list(fields.values()))):
             raise Stop('Sensitive material detected in board draft.')
         chapters = list(dict.fromkeys(item['chapters'])) or ['확인 필요']
@@ -652,6 +685,9 @@ def reviewed_fallback(items, sources, active, cfg, start, end):
         title = item['title'].strip()
         if not title or len(title) > 120 or SENSITIVE.search(title):
             title = '원문 확인 필요 업무'
+        if item.get('sourceTaskId'):
+            deferred += 1  # Failed existing-task validation must not become a duplicate.
+            continue
         safe = dict(item, title=title, sourceTaskId='', owners=[], requester='', collaborators=[],
                     status='확인 필요', chapters=['확인 필요'], due='', dueNote='일정 확인 필요',
                     progress='', evidenceIds=[current[-1]['evidence_id']], roleFacts=[],

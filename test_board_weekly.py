@@ -393,16 +393,30 @@ class BoardTests(unittest.TestCase):
             fact = dict(kind='owner',actor=actor,sourceId='E1',quote=messages['E1']['text'])
             self.assertTrue(board.direct_role(fact,messages,directory))
 
-    def test_existing_task_matching_requires_same_thread_and_same_deliverable_title(self):
+    def test_existing_task_matching_repairs_bad_links_without_creating_duplicates(self):
         self.item['sourceTaskId'] = 'old-task'
         old = {'id': 'old-task', 'title': self.item['title'], 'link': 'https://example.slack.com/archives/CTEST/p' + stamp(13).replace('.', '')}
         self.assertEqual(self.payload([old])['sourceTaskId'], 'old-task')
         old['link'] = 'https://example.slack.com/archives/CTEST/p' + stamp(1).replace('.', '')
-        self.assertIsNone(self.payload([old])['sourceTaskId'])
-        self.assertIn('기존 업무와의 연결 확인 필요', self.payload([old])['verification'])
+        with self.assertRaises(board.Stop):
+            self.payload([old])
+        rows, review, deferred = board.reviewed_fallback([self.item], self.sources, [old], self.cfg, self.start, self.end)
+        self.assertEqual((rows, review, deferred), ([], 0, 1))
         old['link'] = 'https://example.slack.com/archives/CTEST/p' + stamp(13).replace('.', '')
         self.item['title'] = '별개의 새 산출물'
-        self.assertIsNone(self.payload([old])['sourceTaskId'])
+        with self.assertRaises(board.Stop):
+            self.payload([old])
+
+    def test_same_deliverable_rename_keeps_canonical_title_and_existing_id(self):
+        old = {'id':'old-task', 'title':'합성 배너 업무', 'link':'https://example.slack.com/archives/CTEST/p'+stamp(13).replace('.','')}
+        self.item.update(sourceTaskId='old-task', title='합성 배너 업무 수정·배포')
+        row=self.payload([old])
+        self.assertEqual(row['sourceTaskId'], 'old-task')
+        self.assertEqual(row['title'], old['title'])
+        self.item.update(sourceTaskId='', title=old['title'])
+        self.assertEqual(self.payload([old])['sourceTaskId'], 'old-task')
+        self.assertFalse(board.same_deliverable_title('SNS 11월 1주차 제작', 'SNS 11월 2주차 제작'))
+        self.assertFalse(board.same_deliverable_title('합성 배너 디자인', '합성 썸네일 디자인'))
 
     def test_concise_fields_and_sensitive_sources(self):
         self.item['issue'] = ['첫 항목', '둘째 항목', '셋째 항목', '넷째 항목']
