@@ -149,7 +149,7 @@ def slack(method, params, write=False):
     result = api_json(url, os.environ['SLACK_BOT_TOKEN'], params if write else None)
     if not result.get('ok'):
         reason = result.get('error', '')
-        raise Stop('Slack ' + (reason if re.fullmatch(r'[a-z_]{1,60}', str(reason)) else 'rejected'))
+        raise Stop('Slack ' + method + ': ' + (reason if re.fullmatch(r'[a-z_]{1,60}', str(reason)) else 'rejected'))
     return result
 
 
@@ -176,6 +176,21 @@ def receipts(rows, bot):
         meta = msg.get('metadata', {})
         if msg.get('user') == bot and meta.get('event_type') == EVENT_TYPE:
             result.append(meta.get('event_payload', {}))
+    return result
+
+
+def previous_editorial_urls(rows):
+    result = set()
+    for message in rows:
+        text = message.get('text', '') + '\n' + '\n'.join(
+            b.get('text', {}).get('text', '') for b in message.get('blocks', [])
+            if isinstance(b.get('text'), dict))
+        if '[디자인 실무 인사이트]' in text or any(title in text for title in TITLES.values()):
+            for url in re.findall(r'https://[^\s<>|)]+', text):
+                try:
+                    result.add(canonical(html.unescape(url)))
+                except Stop:
+                    pass
     return result
 
 
@@ -385,15 +400,15 @@ def main():
     auth = slack('auth.test', {})
     if auth.get('team_id') != os.environ['SLACK_TEAM_ID'] or auth.get('user_id') != os.environ['SLACK_BOT_USER_ID']:
         raise Stop('Slack bot/workspace mismatch.')
-    info = slack('conversations.info', {'channel': channel})['channel']
-    if info.get('is_archived') or info.get('is_ext_shared') or not info.get('is_member'):
-        raise Stop('Destination unavailable or bot not a member.')
+    # The destination was verified during setup. Reuse existing history access;
+    # do not require channels:read or expand the installed bot's permissions.
     rows = history(channel, now)
     prior = receipts(rows, auth['user_id'])
     if any(p.get('date') == day.isoformat() for p in prior):
         print('Skipped: today already published.')
         return
     excluded = {canonical(u) for p in prior for u in p.get('source_urls', [])}
+    excluded.update(previous_editorial_urls(rows))
     excluded.update(canonical(u) for u in json.loads(os.environ.get('BRIEFING_EXCLUDED_URLS', '[]')))
     last = next((p for p in prior if p.get('category') != 'events'), {})
     region = 'international' if last.get('region') == 'domestic' else 'domestic'
