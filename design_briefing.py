@@ -118,13 +118,21 @@ class PublicRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def public_read(url):
-    public_host(url)
-    opener = urllib.request.build_opener(PublicRedirect())
-    with opener.open(urllib.request.Request(url, headers={'User-Agent': 'DesignBriefing/1.0'}), timeout=25) as res:
-        data = res.read(MAX_BODY + 1)
-        if len(data) > MAX_BODY:
-            raise Stop('Source exceeds size limit.')
-        return data, res.headers.get_content_type(), res.geturl()
+    try:
+        public_host(url)
+        opener = urllib.request.build_opener(PublicRedirect())
+        encoded = urllib.parse.quote(url, safe=":/?&=%#@+;,!~*'()-._")
+        with opener.open(urllib.request.Request(encoded, headers={'User-Agent': 'DesignBriefing/1.0'}), timeout=25) as res:
+            data = res.read(MAX_BODY + 1)
+            if len(data) > MAX_BODY:
+                raise Stop('Source exceeds size limit.')
+            return data, res.headers.get_content_type(), res.geturl()
+    except Stop:
+        raise
+    except urllib.error.HTTPError as exc:
+        raise Stop('Public source HTTP ' + str(exc.code)) from None
+    except Exception as exc:
+        raise Stop('Public source could not be read: ' + type(exc).__name__) from None
 
 
 def api_json(url, token, payload=None):
@@ -406,7 +414,7 @@ def main():
         if seconds > 2400:
             raise Stop('Outside preparation window.')
         while dt.datetime.now(KST) < nominal:
-            time.sleep(min(30, (nominal - dt.datetime.now(KST)).total_seconds()))
+            time.sleep(max(0, min(30, (nominal - dt.datetime.now(KST)).total_seconds())))
         now = dt.datetime.now(KST)
     if publishing and not nominal <= now < nominal + dt.timedelta(hours=2):
         raise Stop('Outside same-day 09:00–11:00 publication window.')
@@ -429,25 +437,35 @@ def main():
     excluded.update(canonical(u) for u in json.loads(os.environ.get('BRIEFING_EXCLUDED_URLS', '[]')))
     last = next((p for p in prior if p.get('category') != 'events'), {})
     region = 'international' if last.get('region') == 'domestic' else 'domestic'
-    report, allowed = research(day, category, region, excluded)
-    draft = structure(report, category)
-    if not draft['temporary_holiday'] and not draft['items']:
-        print('No suitable first candidate; trying the other region once.')
-        other = 'international' if region == 'domestic' else 'domestic'
-        report, allowed = research(day, category, other, excluded)
+    for attempt in range(3):
+        preferred = region if attempt % 2 == 0 else ('international' if region == 'domestic' else 'domestic')
+        report, allowed = research(day, category, preferred, excluded)
         draft = structure(report, category)
-    if draft['temporary_holiday']:
-        holiday_url = canonical(draft['holiday_source'])
-        host = urllib.parse.urlsplit(holiday_url).hostname
-        if holiday_url not in allowed or not host.endswith('.go.kr'):
-            raise Stop('Unverified temporary-holiday claim.')
-        print('Skipped: government-confirmed temporary holiday.')
-        return
-    count = len(draft['items'])
-    print('Editorial entries selected:', count, '; category:', category)
-    if (category == 'events' and not 1 <= count <= 3) or (category != 'events' and count != 1):
-        raise Stop('No suitable verified content; nothing published.')
-    items = [verify_item(i, day, category, allowed, excluded) for i in draft['items']]
+        if draft['temporary_holiday']:
+            holiday_url = canonical(draft['holiday_source'])
+            host = urllib.parse.urlsplit(holiday_url).hostname
+            if holiday_url not in allowed or not host.endswith('.go.kr'):
+                raise Stop('Unverified temporary-holiday claim.')
+            print('Skipped: government-confirmed temporary holiday.')
+            return
+        count = len(draft['items'])
+        print('Editorial entries selected:', count, '; category:', category)
+        try:
+            if (category == 'events' and not 1 <= count <= 3) or (category != 'events' and count != 1):
+                raise Stop('No suitable verified content; nothing published.')
+            print('Verifying original source host:', urllib.parse.urlsplit(draft['items'][0]['source_url']).hostname)
+            items = [verify_item(i, day, category, allowed, excluded) for i in draft['items']]
+            break
+        except (Stop, ValueError) as exc:
+            print('Candidate rejected:', str(exc) if isinstance(exc, Stop) else 'invalid date or URL')
+            if attempt == 2:
+                raise Stop('No fully verified source after three candidates; nothing published.') from None
+            for item in draft['items']:
+                try:
+                    excluded.add(canonical(item['source_url']))
+                except (Stop, ValueError):
+                    pass
+            print('Trying a different source without relaxing verification.')
     if len({i['source_url'] for i in items}) != len(items):
         raise Stop('Duplicate roundup entries.')
     blocks = blocks_for(items, category, mention, day)
@@ -581,6 +599,8 @@ if __name__ == '__main__':
         except Stop as exc:
             print('STOP:', exc, file=sys.stderr)
             raise SystemExit(1)
-        except Exception:
-            print('STOP: unexpected failure; nothing retried. Inspect the workflow privately.', file=sys.stderr)
+        except Exception as exc:
+            import traceback
+            location = traceback.extract_tb(exc.__traceback__)[-1].lineno
+            print('STOP: unexpected ' + type(exc).__name__ + ' at line ' + str(location) + '; nothing retried.', file=sys.stderr)
             raise SystemExit(1)
