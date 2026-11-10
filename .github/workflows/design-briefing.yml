@@ -1,0 +1,43 @@
+name: Daily design briefing
+on:
+  schedule:
+    # Prepare early; the runner waits until 09:00 Asia/Seoul before publishing.
+    - cron: '30 23 * * 0-4'
+    - cron: '0 0 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish once only inside today's Korean business-day 09:00-11:00 window
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: design-public-briefing
+  cancel-in-progress: false
+jobs:
+  briefing:
+    if: github.event_name == 'workflow_dispatch' || vars.BRIEFING_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install Korean holiday calendar
+        run: python3 -m pip install 'holidays==0.83'
+      - name: Validate holiday rules, monthly routing and message format
+        run: python3 design_briefing.py --self-test
+      - name: Research, verify and deliver one briefing
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SLACK_BOT_USER_ID: ${{ vars.SLACK_BOT_USER_ID }}
+          SLACK_TEAM_ID: ${{ vars.SLACK_TEAM_ID }}
+          BRIEFING_CHANNEL_ID: ${{ vars.BRIEFING_CHANNEL_ID }}
+          BRIEFING_GROUP_MENTION: ${{ vars.BRIEFING_GROUP_MENTION }}
+          BRIEFING_MODEL: ${{ vars.BRIEFING_MODEL || 'gpt-4.1' }}
+          BRIEFING_EXTRA_HOLIDAYS: ${{ vars.BRIEFING_EXTRA_HOLIDAYS || '[]' }}
+          BRIEFING_EXCLUDED_URLS: ${{ secrets.BRIEFING_EXCLUDED_URLS || '[]' }}
+          BRIEFING_PUBLISH: ${{ vars.BRIEFING_ENABLED == 'true' && (github.event_name == 'schedule' || inputs.publish == true) && 'true' || 'false' }}
+        run: python3 design_briefing.py
