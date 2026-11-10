@@ -311,6 +311,52 @@ class SourceHTML(HTMLParser):
             self.parts.append(data)
 
 
+
+def editorial_override(day):
+    """Owner-approved one-off issues; exact dates expire automatically."""
+    entries = {
+        '2026-11-11': ('tools', dict(
+            title='AI로 만든 상세페이지, PSD로 받아 마무리하기', publisher='크리에이지',
+            source_url='https://creazy.app/ko/blogs/creazy-update-2026-10',
+            source_date='2026-11-05', date_kind='게시',
+            summary='상세페이지 제작 도구 크리에이지에 포토샵 PSD 내보내기가 추가됐습니다. 공식 안내에 따르면 글자와 사진이 레이어로 분리돼, 다운로드한 뒤 포토샵에서 문구를 수정하거나 사진을 교체할 수 있습니다.',
+            point='생성한 초안을 디자이너에게 넘겨 브랜드에 맞게 다듬는 흐름을 만들 수 있습니다.',
+            application='반복되는 상품 상세페이지의 초안 제작에 적용해 보고, 타이포그래피·간격·제품 표현은 포토샵에서 마무리해 보세요.',
+            steps='① 에디터의 내보내기 → PSD(포토샵) 선택\n② 섹션·해상도 선택 후 다운로드\n③ 포토샵에서 텍스트 업데이트를 물으면 업데이트 선택',
+            limitation='Basic 이상 요금제에서 지원하며, 글자 편집에는 사용한 폰트가 설치돼 있어야 합니다.',
+            evidence_quote='이제는 글자와 사진이 레이어로 나뉘어 들어가서')),
+        '2026-11-12': ('practice', dict(
+            title='제품의 기능을 캠페인 비주얼로 바꾸는 방법', publisher='삼성 디자인',
+            source_url='https://www.design.samsung.com/kr/contents/seouldesignweek2026-artwork/',
+            source_date='2026-10-28', date_kind='게시',
+            summary='삼성과 POLI.design의 협업 사례입니다. 제품의 기능과 사용 경험을 아티스트의 시각 언어로 풀고, 아트워크에 맞춘 프레임까지 연결했습니다. 이어폰의 소리는 소재와 질감, 동심원 파동으로 표현하고, 로봇청소기의 이동 경로는 그림을 만드는 선과 흔적으로 해석했습니다.',
+            point='제품별 특징이 색·형태·움직임으로 어떻게 이어지는지 비교하기 좋습니다.',
+            application='다음 키비주얼 회의에서 제품 특징 → 고객이 느끼는 감각 → 시각적 표현을 한 줄씩 적어보세요. 보습이라면 감싸는 형태, 흡수라면 스며드는 움직임처럼 시안의 출발점을 만들 수 있습니다.',
+            limitation='전시 아트워크 제작 사례이며, 맞춤 베젤은 판매 제품이 아닌 콘셉트 디자인입니다.',
+            evidence_quote='소리의 다양한 특성을 서로 다른 소재와 질감으로 번역하고')),
+        '2026-11-13': ('events', dict(
+            title='서울디자인페스티벌, 방문 전 얼리버드 일정 확인하세요', publisher='서울디자인페스티벌',
+            source_url='https://seoul.designfestival.co.kr/visit/ticket/',
+            source_date='2026-11-10', date_kind='확인',
+            summary='제25회 서울디자인페스티벌이 11월 26일부터 29일까지 코엑스에서 열립니다. 공식 홈페이지는 디자인 스페셜리스트, 영 디자이너 프로모션, 포스터 릴레이 등의 전시 프로그램을 소개하고 있습니다.',
+            point='제품·그래픽·리빙 등 여러 분야의 브랜드와 디자이너를 함께 살펴볼 수 있는 디자인 행사입니다. 패키지·그래픽·브랜드 경험 레퍼런스를 찾는 분께 추천합니다.',
+            application='방문 전 관심 분야를 정하고, 현장에서는 인상적인 표현과 우리 작업에 적용할 아이디어를 한 쌍으로 기록해 보세요.',
+            limitation='11/26~28 10:30~18:30, 11/29 10:30~17:00. 매표·입장은 관람 종료 1시간 전 마감. 요금과 일정은 방문 전 공식 예매 페이지에서 다시 확인하세요.',
+            evidence_quote='매표 및 입장 마감 시간 : 관람종료 1 시간 전',
+            event_start='2026-11-26', event_end='2026-11-29',
+            venue='서울 코엑스 1층 Hall A', price='파이널 얼리버드 12,000원 / 현장 15,000원',
+            deadline='파이널 얼리버드 11월 22일까지')),
+    }
+    entry = entries.get(day.isoformat())
+    if not entry:
+        return None
+    category, values = entry
+    item = dict.fromkeys(ITEM_FIELDS, '')
+    item.update(language='한국어', region='domestic')
+    item.update(values)
+    return category, item
+
+
 def verify_item(item, day, category, allowed, excluded):
     if set(item) != set(ITEM_FIELDS) or any(not isinstance(v, str) or len(v) > 1000 for v in item.values()):
         raise Stop('Invalid briefing fields.')
@@ -334,7 +380,7 @@ def verify_item(item, day, category, allowed, excluded):
             raise Stop('Invalid event interval.')
         if not all(item[k].strip() for k in ('venue', 'price', 'deadline')):
             raise Stop('Missing event logistics.')
-    raw, kind, final = public_read(url)
+    raw, kind, final = public_read(safe_url(item['source_url']))
     if kind not in ('text/html', 'application/xhtml+xml'):
         raise Stop('Source is not readable HTML.')
     parser = SourceHTML()
@@ -360,6 +406,32 @@ def verify_item(item, day, category, allowed, excluded):
     return item
 
 
+
+def verify_editorial(day, excluded=()):
+    category, fixed = editorial_override(day)
+    item = verify_item(fixed, day, category, {canonical(fixed['source_url'])}, set(excluded))
+    if category == 'events':
+        raw, _, _ = public_read(fixed['source_url'])
+        page = SourceHTML()
+        page.feed(raw.decode('utf-8', errors='replace'))
+        visible = re.sub(r'\s+', '', html.unescape(' '.join(page.parts)))
+        for fact in ('2026년11월26일', '29일', '12,000', '15,000', '~11/22'):
+            if fact not in visible:
+                raise Stop('Curated exhibition details changed; review before delivery.')
+    return category, item
+
+
+def verify_upcoming_editorials():
+    today = dt.datetime.now(KST).date()
+    checked = 0
+    for offset in range(8):
+        day = today + dt.timedelta(days=offset)
+        if editorial_override(day):
+            verify_editorial(day)
+            checked += 1
+    print('Upcoming owner-approved issues verified:', checked)
+
+
 def escape(value):
     # Source text cannot introduce Slack mentions or links.
     return html.escape(value, quote=False)
@@ -368,7 +440,7 @@ def escape(value):
 def blocks_for(items, category, mention, day):
     blocks = [{'type': 'section', 'text': {'type': 'mrkdwn', 'text': mention + '\n*' + TITLES[category] + '*'}}]
     if category == 'events':
-        blocks.append({'type': 'section', 'text': {'type': 'plain_text', 'text': day.strftime('%Y년 %m월') + ' 전시·세미나 모음'}})
+        blocks.append({'type': 'section', 'text': {'type': 'plain_text', 'text': ('이번 주 전시 소식' if day == dt.date(2026, 11, 13) else day.strftime('%Y년 %m월') + ' 전시·세미나 모음')}})
     for item in items:
         blocks.append({'type': 'header', 'text': {'type': 'plain_text', 'text': item['title'][:145]}})
         blocks.append({'type': 'image', 'image_url': item['image_url'], 'alt_text': item['title'][:500]})
@@ -432,8 +504,21 @@ def main():
     excluded.update(canonical(u) for u in json.loads(os.environ.get('BRIEFING_EXCLUDED_URLS', '[]')))
     last = next((p for p in prior if p.get('category') != 'events'), {})
     region = 'international' if last.get('region') == 'domestic' else 'domestic'
+    override = editorial_override(day)
+    if not publishing and not override:
+        upcoming = [day + dt.timedelta(days=n) for n in range(1, 8)
+                    if editorial_override(day + dt.timedelta(days=n))]
+        if upcoming:
+            for target in upcoming:
+                verify_editorial(target, excluded)
+            print('Upcoming owner-approved issues verified:', len(upcoming), '; no message sent.')
+            return
+    if override:
+        category, verified = verify_editorial(day, excluded)
+        items = [verified]
+        print('Owner-approved date-specific editorial verified.')
     blocked_hosts = {'helpx.adobe.com'}
-    for attempt in range(3):
+    for attempt in range(0 if override else 3):
         preferred = region if attempt % 2 == 0 else ('international' if region == 'domestic' else 'domestic')
         report, allowed = research(day, category, preferred, excluded, blocked_hosts)
         draft = structure(report, category, day)
@@ -546,6 +631,20 @@ def self_test():
             self.assertEqual(text.count('<!subteam^SGROUP>'), 1)
             self.assertNotIn('<@', text)
 
+        def test_one_off_week_expires_and_keeps_regular_routing(self):
+            for value, category, host in [('2026-11-11', 'tools', 'creazy.app'),
+                                           ('2026-11-12', 'practice', 'www.design.samsung.com'),
+                                           ('2026-11-13', 'events', 'seoul.designfestival.co.kr')]:
+                kind, item = editorial_override(dt.date.fromisoformat(value))
+                self.assertEqual(kind, category)
+                self.assertEqual(urllib.parse.urlsplit(item['source_url']).hostname, host)
+                self.assertEqual(set(item), set(ITEM_FIELDS))
+            self.assertIsNone(editorial_override(dt.date(2026, 11, 16)))
+            self.assertEqual(category_for(dt.date(2026, 11, 16), holiday_calendar(2026)), 'practice')
+            kind, item = editorial_override(dt.date(2026,11,13))
+            item['image_url'] = 'https://example.com/image.jpg'
+            self.assertIn('이번 주 전시 소식', json.dumps(blocks_for([item], kind, '<!subteam^SGROUP>', dt.date(2026,11,13)), ensure_ascii=False))
+
         def test_untrusted_text_cannot_tag(self):
             self.assertNotIn('<!', escape('<!channel>'))
 
@@ -592,7 +691,9 @@ def self_test():
 
 
 if __name__ == '__main__':
-    if '--self-test' in sys.argv:
+    if '--verify-editorials' in sys.argv:
+        verify_upcoming_editorials()
+    elif '--self-test' in sys.argv:
         self_test()
     else:
         try:
