@@ -409,15 +409,8 @@ def main():
         return
     publishing = os.environ.get('BRIEFING_PUBLISH') == 'true'
     nominal = dt.datetime.combine(day, dt.time(9), KST)
-    if publishing and now < nominal:
-        seconds = (nominal - now).total_seconds()
-        if seconds > 2400:
-            raise Stop('Outside preparation window.')
-        while dt.datetime.now(KST) < nominal:
-            time.sleep(max(0, min(30, (nominal - dt.datetime.now(KST)).total_seconds())))
-        now = dt.datetime.now(KST)
-    if publishing and not nominal <= now < nominal + dt.timedelta(hours=2):
-        raise Stop('Outside same-day 09:00–11:00 publication window.')
+    if publishing and not nominal - dt.timedelta(minutes=40) <= now < nominal + dt.timedelta(hours=2):
+        raise Stop('Outside same-day preparation/publication window.')
     channel = os.environ['BRIEFING_CHANNEL_ID']
     mention = os.environ['BRIEFING_GROUP_MENTION']
     if not re.fullmatch(r'C[A-Z0-9]+', channel) or not re.fullmatch(r'<!subteam\^S[A-Z0-9]+>', mention):
@@ -472,6 +465,9 @@ def main():
     if not publishing:
         print('Draft validated: calendar, sources, thumbnail and Slack format. No message sent.')
         return
+    # Prepare sources before 09:00, then wait to publish at the requested time.
+    while dt.datetime.now(KST) < nominal:
+        time.sleep(max(0, min(30, (nominal - dt.datetime.now(KST)).total_seconds())))
     # Research may run long. Recheck the same-day window before writing.
     if not nominal <= dt.datetime.now(KST) < nominal + dt.timedelta(hours=2):
         raise Stop('Research exceeded posting window.')
