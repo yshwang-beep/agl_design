@@ -37,6 +37,7 @@ jobs:
           BRIEFING_CHANNEL_ID: ${{ vars.BRIEFING_CHANNEL_ID }}
           BRIEFING_GROUP_MENTION: ${{ vars.BRIEFING_GROUP_MENTION }}
           BRIEFING_MODEL: ${{ vars.BRIEFING_MODEL || 'gpt-4.1' }}
+          BRIEFING_SEARCH_MODEL: ${{ vars.BRIEFING_SEARCH_MODEL || 'gpt-5-mini' }}
           BRIEFING_EXTRA_HOLIDAYS: ${{ vars.BRIEFING_EXTRA_HOLIDAYS || '[]' }}
           BRIEFING_EXCLUDED_URLS: ${{ secrets.BRIEFING_EXCLUDED_URLS || '[]' }}
           BRIEFING_PUBLISH: ${{ vars.BRIEFING_ENABLED == 'true' && (github.event_name == 'schedule' || inputs.publish == true) && 'true' || 'false' }}
