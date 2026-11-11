@@ -538,6 +538,22 @@ def resolve_owner_proofs(parsed, proofs):
     return parsed
 
 
+def explicit_week_assignments(text):
+    return re.findall(r'(\d+)\s*주차[\s*:：\-–—]*(?:(?:(?:제작|작업)\s*)?담당(?:자)?[\s*:：\-–—]*)?'
+                      r'<@(U[A-Z0-9]+)(?:\|[^>]+)?>', text)
+
+
+def required_week_assignments(source, cfg):
+    designers = {p['id'] for p in cfg.get('designers', [])}
+    assigned = {}
+    for message in source['messages']:
+        if message['evidence_id'] in source.get('current_ids', []):
+            for week, actor in explicit_week_assignments(message.get('text', '')):
+                if actor in designers:
+                    assigned[week] = {'week': week, 'actor': actor, 'sourceId': message['evidence_id']}
+    return list(assigned.values())
+
+
 class CoverageAuditError(Stop):
     def __init__(self, failures, result):
         # Failure texts are fixed validator messages, never source content/IDs.
@@ -565,8 +581,8 @@ def validate_source_reviews(result, sources, cfg=None):
     seen, items, failures = set(), [], []
     directory = (cfg or {}).get('designers', []) + (cfg or {}).get('collaborators', [])
     designers = {p['id'] for p in (cfg or {}).get('designers', [])}
-    def fail(key, message):
-        failures.append({'sourceKey': key, 'failure': message})
+    def fail(key, message, **detail):
+        failures.append({'sourceKey': key, 'failure': message, **detail})
     for review in result.get('sourceReviews', []):
         key = review['sourceKey']
         if key not in sources or key in seen:
@@ -601,15 +617,11 @@ def validate_source_reviews(result, sources, cfg=None):
                     fail(key, 'An owner requires an exact, direct assignment or own-work quotation.')
             items.append(item)
         # Explicit week-by-week assignments must survive as separate rows.
-        assigned = {}
-        for message in source['messages']:
-            if message['evidence_id'] in source.get('current_ids', []):
-                for week, actor in re.findall(r'(\d+)\s*주차[^\n<]{0,30}<@(U[A-Z0-9]+)(?:\|[^>]+)?>', message.get('text', '')):
-                    if actor in designers:
-                        assigned[week] = actor
-        for week, actor in assigned.items():
+        for assignment in required_week_assignments(source, cfg or {}):
+            week, actor = assignment['week'], assignment['actor']
             if not any(actor in item['owners'] and re.search(r'(?<!\d)' + re.escape(week) + r'\s*주차', item['title']) for item in rows):
-                fail(key, 'A numbered-week assignment is missing; return each week and its explicit owner separately.')
+                fail(key, 'A numbered-week assignment is missing; return each week and its explicit owner separately.',
+                     requiredAssignment=assignment)
     for key in set(sources) - seen:
         fail(key, 'Source has no disposition; include it exactly once.')
     if failures:
@@ -626,6 +638,9 @@ items에 이 스레드의 검토 완료된 업무 전체를 직접 반환한다.
 담당은 verifiedOwnerProofs 중 해당 업무·주차·산출물에 실제로 해당하는 근거 ID를 ownerProofIds에 선택한다.
 담당자를 직접 쓰거나 담당 인용을 다시 작성하지 않는다. 원문과 대조해 잘못된 과거 담당·다른 산출물의 근거를 선택하지 않는다.
 명시적 근거가 없으면 ownerProofIds=[]로 두고 issue에 담당 확인 필요를 표시한다. roleFacts는 requester/collaborator만 반환한다.
+requiredWeeklyAssignments의 각 배정은 반드시 별도 업무로 포함한다. 제목에는 정확한 N주차를 쓰고 해당 actor의 ownerProofIds를 선택한다.
+기존 제목 유지 규칙 때문에 주차 배정을 생략하지 않는다. 같은 산출물의 제목에서 주차만 빠졌으면 제목에 주차를 명시한다.
+다른 주차의 기존 업무 ID를 재사용하지 않는다. repair.requiredAssignment는 누락된 정확한 주차·담당·원문 ID이며 해당 업무를 복구한다.
 기존 수동 업무는 유지하며 별개 신규 산출물만 새로 추가한다. 완료·담당·마감의 근거 검증 규칙은 그대로 적용한다.
 반영할 업무가 없으면 items=[]와 구체적인 exclusionReason 및 해당 스레드의 실제 evidence_id 하나를 exclusionEvidenceId에 반환한다.
 작업을 맡거나 제작·전달한 디자이너의 직접 선언이 있으면 업무 없음으로 제외하지 않는다.
@@ -643,6 +658,7 @@ def summarize_batch(sources, active, cfg, period, repair=None, audit_items=None)
     if auditing:
         data['proposedItems'] = audit_items
         data['verifiedOwnerProofs'] = owner_proof_catalog(sources, cfg)
+        data['requiredWeeklyAssignments'] = required_week_assignments(next(iter(sources.values())), cfg)
     if len(json.dumps(data, ensure_ascii=False)) > 280000:
         raise Stop('Model input exceeds budget; no silent truncation.')
     result = http_json('https://api.openai.com/v1/responses', os.environ['OPENAI_API_KEY'], {
@@ -689,7 +705,9 @@ def direct_role(fact, messages, directory=None):
     if kind == 'requester':
         return bool((message.get('user') == actor and re.search(r'부탁드립니다|요청드립니다|해\s*주세요|가능할까요', quote))
                     or (mentioned and re.search(r'요청자\s*[:：]', quote)))
-    if kind == 'owner' and mentioned and re.search(r'(?:\d+\s*주차|라이프스타일\s*컷|모델\s*제품\s*컷)\s*[*:：]', quote):
+    if kind == 'owner' and any(assigned_actor == actor for _, assigned_actor in explicit_week_assignments(quote)):
+        return True
+    if kind == 'owner' and mentioned and re.search(r'(?:라이프스타일\s*컷|모델\s*제품\s*컷)\s*[*:：]', quote):
         return True
     if (kind == 'owner' and message.get('user') == actor
             and re.search(r'(?:작업하여|제작하여|제작\s*완료|작업\s*완료).{0,40}(?:전달|공유|업로드)', quote)):

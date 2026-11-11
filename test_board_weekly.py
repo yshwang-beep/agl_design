@@ -69,12 +69,32 @@ class BoardTests(unittest.TestCase):
         self.sources[self.key]['messages'][0]['text']='3주차: <@UTEST1>\n4주차: <@UTEST2>'
         self.item.update(title='인스타그램 3주차',roleFacts=[{'kind':'owner','actor':'UTEST1','sourceId':'E1','quote':'3주차: <@UTEST1>'}])
         review={'sourceKey':self.key,'items':[self.item],'exclusionReason':'','exclusionEvidenceId':''}
-        with self.assertRaises(board.CoverageAuditError):
+        with self.assertRaises(board.CoverageAuditError) as caught:
             board.validate_source_reviews({'sourceReviews':[review]},self.sources,self.cfg)
+        self.assertEqual(caught.exception.failures[0]['requiredAssignment'],
+                         {'week':'4','actor':'UTEST2','sourceId':'E1'})
+        self.assertNotIn('UTEST2',str(caught.exception))
         fourth=copy.deepcopy(self.item);fourth.update(title='인스타그램 4주차',owners=['UTEST2'],roleFacts=[
             {'kind':'owner','actor':'UTEST2','sourceId':'E1','quote':'4주차: <@UTEST2>'}])
         review['items'].append(fourth)
         self.assertEqual(len(board.validate_source_reviews({'sourceReviews':[review]},self.sources,self.cfg)),2)
+
+    def test_required_week_assignments_use_latest_explicit_current_assignment(self):
+        source={'messages':[
+            {'evidence_id':'OLD','text':'4주차: <@UTEST1>'},
+            {'evidence_id':'E1','text':'3주차: <@UTEST1>\n4주차: <@UTEST1>'},
+            {'evidence_id':'E2','text':'4주차: <@UTEST2>'}], 'current_ids':['E1','E2']}
+        self.assertEqual(board.required_week_assignments(source,self.cfg),[
+            {'week':'3','actor':'UTEST1','sourceId':'E1'},
+            {'week':'4','actor':'UTEST2','sourceId':'E2'}])
+
+    def test_week_assignment_syntax_matches_owner_proofs_and_excludes_meeting_mentions(self):
+        for text in ['4주차 - <@UTEST2>', '*4주차* : <@UTEST2>', '4주차 담당: <@UTEST2>', '4주차 <@UTEST2>']:
+            source={'messages':[{'evidence_id':'E1','user':'UTEST0','text':text}], 'current_ids':['E1']}
+            self.assertEqual(board.required_week_assignments(source,self.cfg),[
+                {'week':'4','actor':'UTEST2','sourceId':'E1'}])
+            self.assertTrue(board.owner_proof_catalog({'one':source},self.cfg))
+        self.assertEqual(board.explicit_week_assignments('4주차 회의에서 <@UTEST2> 님께 질문했습니다.'),[])
 
     def test_explicit_cut_assignment_and_author_delivery_prove_ownership(self):
         messages={'E1':{'user':'UTEST0','text':'라이프스타일 컷: <@UTEST1>'},
