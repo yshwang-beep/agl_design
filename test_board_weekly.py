@@ -15,14 +15,12 @@ def stamp(day, hour=12):
 
 
 class BoardTests(unittest.TestCase):
-    def test_audit_repairs_all_missing_quotes_without_publishing_source_content(self):
+    def test_audit_repairs_all_dispositions_without_duplicating_private_drafts(self):
         import copy
         second=copy.deepcopy(self.sources[self.key]);second_key=self.key+'-second'
         sources={**self.sources,second_key:second}
-        def review(key):
-            return {'sourceKey':key,'deliverables':[],'exclusionReason':'참고 알림',
-                    'exclusionFact':{'sourceId':'','quote':''}}
-        bad={'items':[],'sourceReviews':[review(self.key),review(second_key)]}
+        bad={'sourceReviews':[{'sourceKey':key,'items':[],'exclusionReason':'참고 알림',
+                              'exclusionEvidenceId':''} for key in sources]}
         with self.assertRaises(board.CoverageAuditError) as caught:
             board.validate_source_reviews(bad,sources)
         self.assertEqual(len(caught.exception.failures),2)
@@ -31,53 +29,72 @@ class BoardTests(unittest.TestCase):
             self.assertEqual(board.audit_with_repair(sources,[],self.cfg,self.period,None,[]),[])
         repair=model.call_args.args[4]
         self.assertEqual(len(repair['failures']),2)
-        self.assertEqual(repair['source_reviews'],bad['sourceReviews'])
+        self.assertNotIn('previous_items',repair)
+        self.assertNotIn('source_reviews',repair)
         self.assertNotIn(self.key,output.getvalue())
         self.assertIn('2 check(s)',output.getvalue())
 
     def test_unrepaired_audit_never_returns_a_partial_success(self):
-        failure=board.CoverageAuditError([{'sourceKey':self.key,'failure':'missing quote'}],{'items':[]})
+        failure=board.CoverageAuditError([{'sourceKey':self.key,'failure':'missing anchor'}],{'sourceReviews':[]})
         with patch.object(board,'summarize_batch',side_effect=failure) as model,contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(board.CoverageAuditError):
                 board.audit_with_repair(self.sources,[],self.cfg,self.period,None,[])
         self.assertEqual(model.call_count,3)
 
-    def test_coverage_audit_rejects_silent_source_deliverable_and_owner_omissions(self):
+    def test_coverage_audit_rejects_unreviewed_cross_thread_and_invented_evidence(self):
         import copy
-        result={'items':[self.item], 'sourceReviews':[{
-            'sourceKey':self.key,'deliverables':[{'title':self.item['title'],
-                'owners':self.item['owners'],'evidenceIds':self.item['evidenceIds'],'itemIndexes':[0]}],
-            'exclusionReason':'','exclusionFact':{'sourceId':'','quote':''}}]}
-        self.assertEqual(board.validate_source_reviews(result,self.sources),[self.item])
-        missing_thread=copy.deepcopy(result);missing_thread['sourceReviews']=[]
-        missing_row=copy.deepcopy(result);missing_row['sourceReviews'][0]['deliverables'][0]['itemIndexes']=[]
-        missing_owner=copy.deepcopy(result);missing_owner['sourceReviews'][0]['deliverables'][0]['owners']=['another-designer']
-        merged_week=copy.deepcopy(result);merged_week['sourceReviews'][0]['deliverables'][0]['title']='다른 주차 업무'
-        for invalid in [missing_thread,missing_row,missing_owner,merged_week]:
+        result={'sourceReviews':[{'sourceKey':self.key,'items':[self.item],
+                                 'exclusionReason':'','exclusionEvidenceId':''}]}
+        self.assertEqual(board.validate_source_reviews(result,self.sources,self.cfg),[self.item])
+        missing=copy.deepcopy(result);missing['sourceReviews']=[]
+        cross=copy.deepcopy(result);cross['sourceReviews'][0]['items'][0]['sourceKey']='another-thread'
+        invented=copy.deepcopy(result);invented['sourceReviews'][0]['items'][0]['evidenceIds']=['UNKNOWN']
+        owner=copy.deepcopy(result);owner['sourceReviews'][0]['items'][0]['roleFacts']=[]
+        for invalid in [missing,cross,invented,owner]:
             with self.subTest(invalid=invalid),self.assertRaises(board.Stop):
-                board.validate_source_reviews(invalid,self.sources)
+                board.validate_source_reviews(invalid,self.sources,self.cfg)
 
-    def test_coverage_exclusion_requires_real_source_quote(self):
-        m=self.sources[self.key]['messages'][0]
-        review={'sourceKey':self.key,'deliverables':[],'exclusionReason':'업무가 아닌 참고 안내',
-                'exclusionFact':{'sourceId':m['evidence_id'],'quote':m['text']}}
-        self.assertEqual(board.validate_source_reviews({'items':[],'sourceReviews':[review]},self.sources),[])
-        review['exclusionFact']['quote']='원문에 없는 제외 근거'
+    def test_coverage_exclusion_resolves_anchor_from_real_source(self):
+        review={'sourceKey':self.key,'items':[],'exclusionReason':'업무가 아닌 참고 안내','exclusionEvidenceId':'E1'}
+        self.assertEqual(board.validate_source_reviews({'sourceReviews':[review]},self.sources),[])
+        review['exclusionEvidenceId']='INVENTED'
         with self.assertRaises(board.Stop):
-            board.validate_source_reviews({'items':[],'sourceReviews':[review]},self.sources)
+            board.validate_source_reviews({'sourceReviews':[review]},self.sources)
+        review['exclusionEvidenceId']='E1'
+        with self.assertRaises(board.Stop):
+            board.validate_source_reviews({'sourceReviews':[review]},self.sources,self.cfg)
+
+    def test_week_assignments_cannot_disappear_inside_one_summary(self):
+        import copy
+        self.sources[self.key]['messages'][0]['text']='3주차: <@UTEST1>\n4주차: <@UTEST2>'
+        self.item.update(title='인스타그램 3주차',roleFacts=[{'kind':'owner','actor':'UTEST1','sourceId':'E1','quote':'3주차: <@UTEST1>'}])
+        review={'sourceKey':self.key,'items':[self.item],'exclusionReason':'','exclusionEvidenceId':''}
+        with self.assertRaises(board.CoverageAuditError):
+            board.validate_source_reviews({'sourceReviews':[review]},self.sources,self.cfg)
+        fourth=copy.deepcopy(self.item);fourth.update(title='인스타그램 4주차',owners=['UTEST2'],roleFacts=[
+            {'kind':'owner','actor':'UTEST2','sourceId':'E1','quote':'4주차: <@UTEST2>'}])
+        review['items'].append(fourth)
+        self.assertEqual(len(board.validate_source_reviews({'sourceReviews':[review]},self.sources,self.cfg)),2)
+
+    def test_explicit_cut_assignment_and_author_delivery_prove_ownership(self):
+        messages={'E1':{'user':'UTEST0','text':'라이프스타일 컷: <@UTEST1>'},
+                  'E2':{'user':'UTEST2','text':'배너 작업하여 전달드립니다.'}}
+        for actor,eid,quote in [('UTEST1','E1',messages['E1']['text']),('UTEST2','E2',messages['E2']['text'])]:
+            self.assertTrue(board.direct_role({'kind':'owner','actor':actor,'sourceId':eid,'quote':quote},messages))
+        self.assertFalse(board.direct_role({'kind':'owner','actor':'UTEST1','sourceId':'E2','quote':messages['E2']['text']},messages))
 
     def test_summary_independent_audit_can_restore_an_omitted_assignment(self):
-        review={'sourceKey':self.key,'deliverables':[{'title':self.item['title'],
-                'owners':self.item['owners'],'evidenceIds':self.item['evidenceIds'],'itemIndexes':[0]}],
-                'exclusionReason':'','exclusionFact':{'sourceId':'','quote':''}}
+        review={'sourceKey':self.key,'items':[self.item],'exclusionReason':'','exclusionEvidenceId':''}
         def response(value):
             return {'status':'completed','output':[{'content':[{'type':'output_text','text':json.dumps(value)}]}]}
         with patch.dict(os.environ,{'OPENAI_API_KEY':'synthetic'}),patch.object(board,'http_json',side_effect=[
-                response({'items':[]}),response({'items':[self.item],'sourceReviews':[review]})]) as request:
+                response({'items':[]}),response({'sourceReviews':[review]})]) as request:
             items=board.summarize(self.sources,[],self.cfg,self.period)
         self.assertEqual(items,[self.item]);self.assertEqual(request.call_count,2)
         self.assertEqual(json.loads(request.call_args.args[2]['input'])['proposedItems'],[])
-        self.assertIn('sourceReviews',request.call_args.args[2]['text']['format']['schema']['required'])
+        schema=request.call_args.args[2]['text']['format']['schema']
+        self.assertEqual(schema['required'],['sourceReviews'])
+        self.assertNotIn('itemIndexes',json.dumps(schema))
 
     def test_summary_receives_corrected_link_and_full_current_baseline(self):
         baseline={'id':'existing','title':'합성 업무','owner':'수정 담당','localEdited':True,

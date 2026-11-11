@@ -464,27 +464,25 @@ def summarize(sources, active, cfg, period, repair=None):
 
 
 def coverage_schema(sources, active, cfg):
-    schema = board_schema(sources, active, cfg)
+    # Nest each corrected task under its source. No second inventory, duplicated
+    # title or model-computed integer row index is needed to prove coverage.
+    item = board_schema(sources, active, cfg)['properties']['items']['items']
     string = {'type': 'string'}
-    deliverable = {'type': 'object', 'properties': {
-        'title': string, 'owners': {'type': 'array', 'items': string},
-        'evidenceIds': {'type': 'array', 'items': string},
-        'itemIndexes': {'type': 'array', 'items': {'type': 'integer'}}},
-        'required': ['title', 'owners', 'evidenceIds', 'itemIndexes'], 'additionalProperties': False}
     review = {'type': 'object', 'properties': {
-        'sourceKey': string, 'deliverables': {'type': 'array', 'items': deliverable},
-        'exclusionReason': string,
-        'exclusionFact': {'type': 'object', 'properties': {'sourceId': string, 'quote': string},
-                          'required': ['sourceId', 'quote'], 'additionalProperties': False}},
-        'required': ['sourceKey', 'deliverables', 'exclusionReason', 'exclusionFact'], 'additionalProperties': False}
-    schema['properties']['sourceReviews'] = {'type': 'array', 'items': review}
-    schema['required'].append('sourceReviews')
-    return schema
+        'sourceKey': {'type': 'string', 'enum': list(sources) or ['NONE']},
+        'items': {'type': 'array', 'items': item},
+        'exclusionReason': string, 'exclusionEvidenceId': string},
+        'required': ['sourceKey', 'items', 'exclusionReason', 'exclusionEvidenceId'],
+        'additionalProperties': False}
+    return {'type': 'object', 'properties': {'sourceReviews': {'type': 'array', 'items': review}},
+            'required': ['sourceReviews'], 'additionalProperties': False}
 
 
 class CoverageAuditError(Stop):
     def __init__(self, failures, result):
-        super().__init__('Source coverage audit failed (' + str(len(failures)) + ' checks); no update accepted.')
+        # Failure texts are fixed validator messages, never source content/IDs.
+        kinds = '; '.join(sorted({f['failure'] for f in failures}))
+        super().__init__('Source coverage audit failed (' + str(len(failures)) + ' checks): ' + kinds)
         self.failures, self.result = failures, result
 
 
@@ -497,63 +495,79 @@ def audit_with_repair(sources, active, cfg, period, repair, proposed):
                 raise
             # Source IDs, quotes and drafts stay only in the existing authorized
             # model request. Public Actions logs contain counts, never content.
-            proposed = error.result['items']
-            repair = {'failures': error.failures, 'previous_items': proposed,
-                      'source_reviews': error.result.get('sourceReviews', [])}
+            proposed = [item for review in error.result.get('sourceReviews', []) for item in review.get('items', [])]
+            repair = {'failures': error.failures}
             print('Source coverage repair required: ' + str(len(error.failures)) + ' check(s).', flush=True)
 
 
-def validate_source_reviews(result, sources):
-    """Check all dispositions together so one repair can fix every bad quote."""
-    items, reviews = result['items'], result.get('sourceReviews', [])
-    seen, linked, failures = set(), set(), []
+def validate_source_reviews(result, sources, cfg=None):
+    """Require each source once and ground nested tasks in that exact thread."""
+    seen, items, failures = set(), [], []
+    directory = (cfg or {}).get('designers', []) + (cfg or {}).get('collaborators', [])
+    designers = {p['id'] for p in (cfg or {}).get('designers', [])}
     def fail(key, message):
         failures.append({'sourceKey': key, 'failure': message})
-    for review in reviews:
+    for review in result.get('sourceReviews', []):
         key = review['sourceKey']
         if key not in sources or key in seen:
-            fail(key, 'Source coverage audit has duplicate or unknown threads.')
+            fail(key, 'Source has a duplicate or unknown disposition.')
             continue
         seen.add(key)
-        messages = {m['evidence_id']: m for m in sources[key]['messages']}
-        if not review['deliverables']:
-            if (not review['exclusionReason'].strip()
-                    or not verified_quote(review['exclusionFact'], messages)):
-                fail(key, 'An excluded source requires an existing sourceId and an exact verbatim quote from that message; a paraphrase or empty quote is not accepted.')
-        for deliverable in review['deliverables']:
-            ids, indexes = deliverable['evidenceIds'], deliverable['itemIndexes']
-            if not ids or any(e not in messages for e in ids) or not indexes:
-                fail(key, 'An audited deliverable has no grounded board row.')
-            owners = set()
-            for index in indexes:
-                if type(index) is not int or not 0 <= index < len(items) or index in linked:
-                    fail(key, 'Source coverage audit has invalid row references.')
+        source = sources[key]
+        messages = {m['evidence_id']: m for m in source['messages']}
+        rows = review['items']
+        if not rows:
+            # The anchor is resolved from the real source, not a model-generated
+            # transcription. Role/completion quotes in actual tasks stay strict.
+            anchor = messages.get(review['exclusionEvidenceId'])
+            if not review['exclusionReason'].strip() or not anchor or not anchor.get('text', '').strip():
+                fail(key, 'An excluded source requires a reason and a real evidence ID from this thread.')
+            for message in source['messages']:
+                if message['evidence_id'] not in source.get('current_ids', []):
                     continue
-                item = items[index]
-                if item['sourceKey'] != key or item['title'] != deliverable['title']:
-                    fail(key, 'An audited deliverable is missing or merged with another scope.')
-                owners.update(item['owners'])
-                linked.add(index)
-            if owners != set(deliverable['owners']):
-                fail(key, 'An explicitly assigned designer is missing from the draft.')
+                text = message.get('text', '')
+                if (message.get('user') in designers and re.search(r'제가.{0,40}(?:작업|제작)|작업하여.{0,40}전달', text)):
+                    fail(key, 'An explicit designer work statement cannot be excluded; return its task.')
+                    break
+        for item in rows:
+            if item['sourceKey'] != key:
+                fail(key, 'A task belongs to another source; keep it under its original thread.')
+            if not item['evidenceIds'] or any(e not in messages for e in item['evidenceIds']):
+                fail(key, 'A task requires real evidence IDs from its own source.')
+            for owner in item['owners']:
+                if cfg and (owner not in designers or not any(
+                        f['kind'] == 'owner' and f['actor'] == owner and direct_role(f, messages, directory)
+                        for f in item['roleFacts'])):
+                    fail(key, 'An owner requires an exact, direct assignment or own-work quotation.')
+            items.append(item)
+        # Explicit week-by-week assignments must survive as separate rows.
+        assigned = {}
+        for message in source['messages']:
+            if message['evidence_id'] in source.get('current_ids', []):
+                for week, actor in re.findall(r'(\d+)\s*주차[^\n<]{0,30}<@(U[A-Z0-9]+)(?:\|[^>]+)?>', message.get('text', '')):
+                    if actor in designers:
+                        assigned[week] = actor
+        for week, actor in assigned.items():
+            if not any(actor in item['owners'] and re.search(r'(?<!\d)' + re.escape(week) + r'\s*주차', item['title']) for item in rows):
+                fail(key, 'A numbered-week assignment is missing; return each week and its explicit owner separately.')
     for key in set(sources) - seen:
         fail(key, 'Source has no disposition; include it exactly once.')
-    if linked != set(range(len(items))):
-        fail('', 'Every item must be connected exactly once to its source deliverable.')
     if failures:
         raise CoverageAuditError(failures, result)
     return items
 
 
-COVERAGE_RULES = '''독립적인 누락 검토를 수행한다. proposedItems는 검토 대상 초안일 뿐 정답이 아니다.
-각 sources 스레드를 본문부터 마지막 댓글까지 다시 읽고, 산출물·주차·차수별 업무와 최신 명시적 담당을 먼저 목록화한다.
-같은 스레드의 3주차와 4주차, 기존 배너와 신규 배너, 1차와 2차를 각각 대조한다. 단순 회의 일정으로 실제 제작 업무를 대체하지 않는다.
-댓글에서 본인이 제작을 맡겠다고 한 경우와 주차별/컷별 분장도 반영한다. 2차 담당 별도 지정 예정이면 1차 담당자를 2차 제작 담당으로 추정하지 않는다.
-items에는 누락·잘못된 분장을 수정한 전체 초안을 반환한다. 기존 수동 업무는 보존하고 별개 산출물만 신규로 추가한다.
-sourceReviews에는 모든 sourceKey를 정확히 한 번씩 기록한다. deliverables는 해당 스레드의 독립 산출물/주차별 목록이다.
-각 deliverable의 title은 대응 items의 title과 같고 owners는 해당 items의 명시적 담당 ID 전체이며, evidenceIds는 실제 원문 ID, itemIndexes는 items의 0부터 시작하는 인덱스다.
-각 item은 정확히 한 deliverable에 연결한다. 업무가 없는 스레드는 deliverables=[]와 구체적인 exclusionReason, 실제 원문 문구인 exclusionFact를 반드시 남긴다. exclusionFact.sourceId는 그 스레드의 실제 evidence_id이며 quote는 해당 메시지에서 그대로 복사한 연속 부분문자열이다. 요약·의역하거나 빈 인용을 쓰지 않는다.
-산출물을 추출하지 못했다는 이유만으로 업무 없음으로 제외하지 않는다. 근거 없는 상태·완료·담당을 만들지 않는다.'''
+COVERAGE_RULES = """독립적인 누락 검토를 수행한다. proposedItems는 정답이 아닌 초안이다.
+원문 본문부터 마지막 댓글까지 다시 읽고, 주차·차수·산출물별로 누락 및 잘못된 담당을 수정한다.
+이번 검토 응답의 최상위에는 sourceReviews만 반환한다. 모든 sourceKey를 정확히 한 번씩 기록한다.
+각 sourceReviews[].items에 그 스레드의 검토 완료된 업무 전체를 직접 반환한다. items의 sourceKey는 바깥 sourceKey와 같다.
+별도 연결표나 행 번호는 만들지 않는다. 3주차·4주차처럼 담당이 다르면 각각의 업무로 반환한다.
+일정 공지로 실제 제작 업무를 대체하지 않는다. 1차·2차 대상과 컷별 분장도 확인하고 2차 미배정은 추정하지 않는다.
+owners의 각 담당자는 roleFacts의 정확한 원문 인용으로 증명한다. 주차별·컷별 분장 문장과 본인의 제작·전달 선언도 직접 근거다. cc·참고만으로 배정하지 않는다.
+기존 수동 업무는 유지하며 별개 신규 산출물만 새로 추가한다. 완료·담당·마감의 근거 검증 규칙은 그대로 적용한다.
+반영할 업무가 없으면 items=[]와 구체적인 exclusionReason 및 해당 스레드의 실제 evidence_id 하나를 exclusionEvidenceId에 반환한다.
+작업을 맡거나 제작·전달한 디자이너의 직접 선언이 있으면 업무 없음으로 제외하지 않는다.
+업무가 있으면 exclusionReason과 exclusionEvidenceId는 빈 문자열로 둔다. repair가 있으면 모든 지적을 수정한 전체 sourceReviews를 다시 반환한다."""
 
 
 def summarize_batch(sources, active, cfg, period, repair=None, audit_items=None):
@@ -580,7 +594,7 @@ def summarize_batch(sources, active, cfg, period, repair=None, audit_items=None)
         output = ''.join(c.get('text', '') for row in result.get('output', []) for c in row.get('content', [])
                          if c.get('type') == 'output_text')
         parsed = json.loads(output)
-        return validate_source_reviews(parsed, sources) if auditing else parsed['items']
+        return validate_source_reviews(parsed, sources, cfg) if auditing else parsed['items']
     except (ValueError, KeyError, TypeError):
         raise Stop('Board AI output is invalid.') from None
 
@@ -608,6 +622,11 @@ def direct_role(fact, messages, directory=None):
     if kind == 'requester':
         return bool((message.get('user') == actor and re.search(r'부탁드립니다|요청드립니다|해\s*주세요|가능할까요', quote))
                     or (mentioned and re.search(r'요청자\s*[:：]', quote)))
+    if kind == 'owner' and mentioned and re.search(r'(?:\d+\s*주차|라이프스타일\s*컷|모델\s*제품\s*컷)\s*[*:：]', quote):
+        return True
+    if (kind == 'owner' and message.get('user') == actor
+            and re.search(r'(?:작업하여|제작하여|제작\s*완료|작업\s*완료).{0,40}(?:전달|공유|업로드)', quote)):
+        return True
     if mentioned and re.search(r'담당|작업|제작|수정|진행|디자인', quote) and re.search(r'담당|부탁|요청|해\s*주세요|맡|함께|저와|작업\s*예정', quote):
         return True
     return bool(message.get('user') == actor and re.search(r'제가|저는|저와|내가|본인', quote)
