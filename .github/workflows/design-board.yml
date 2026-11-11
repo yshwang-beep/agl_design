@@ -2,6 +2,7 @@ name: Daily design workboard
 on:
   schedule:
     - cron: '0 22 * * *'
+    - cron: '0 1,5 * * *'
   workflow_dispatch:
     inputs:
       phase:
@@ -25,7 +26,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   board:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && vars.BOARD_ENABLED == 'true')
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 22 * * *' && vars.BOARD_ENABLED == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 85
     steps:
@@ -60,3 +61,21 @@ jobs:
           os.environ['BOARD_CONFIG'] = json.dumps(config)
           runpy.run_path('daily_board.py', run_name='__main__')
           PYTHON
+
+  leave:
+    if: github.event_name == 'schedule' && vars.BOARD_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Validate leave reconciliation
+        run: python3 -m unittest test_leave_sync.py
+      - name: Reconcile public leave notices with the calendar
+        env:
+          BOARD_ENABLED: ${{ vars.BOARD_ENABLED }}
+          WORKBOARD_URL: ${{ vars.WORKBOARD_URL }}
+          BOARD_CONFIG: ${{ secrets.BOARD_CONFIG }}
+          SLACK_USER_TOKEN: ${{ secrets.SLACK_USER_TOKEN }}
+        run: python3 leave_sync.py
