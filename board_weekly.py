@@ -1,5 +1,6 @@
 """Cloud-only Monday board collection. Never print source material or credentials."""
 import datetime as dt
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import difflib
 import json
 import os
@@ -449,33 +450,51 @@ def source_batches(sources, active, cfg, period, repair=None, limit=200000):
 
 
 def summarize(sources, active, cfg, period, repair=None):
-    items = []
+    proposed = []
     batches = source_batches(sources, active, cfg, period, repair)
     for n, batch in enumerate(batches, 1):
-        local_active = batch_active(batch, active)
-        local_repair = batch_repair(batch, repair)
-        proposed = summarize_batch(batch, local_active, cfg, period, local_repair)
-        # A valid generated row is not proof that every source was represented.
-        # Independently re-read the complete threads and require a disposition
-        # for each thread before advancing the collection cutoff.
-        items.extend(audit_with_repair(batch, local_active, cfg, period, local_repair, proposed))
-        print('Model batch complete: ' + str(n) + '/' + str(len(batches)) + '.', flush=True)
-    return items
+        proposed.extend(summarize_batch(batch, batch_active(batch, active), cfg, period, batch_repair(batch, repair)))
+        print('Draft batch complete: ' + str(n) + '/' + str(len(batches)) + '.', flush=True)
+    # Independent source audits never share evidence IDs or model row indexes.
+    # Bound API concurrency and return nothing until every source has passed.
+    results, errors = {}, []
+    def audit(key):
+        one = {key: sources[key]}
+        rows = [item for item in proposed if item['sourceKey'] == key]
+        return audit_with_repair(one, batch_active(one, active), cfg, period, batch_repair(one, repair), rows)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        pending = {pool.submit(audit, key): key for key in sources}
+        for n, future in enumerate(as_completed(pending), 1):
+            key = pending[future]
+            try:
+                results[key] = future.result()
+            except Stop as error:
+                errors.append(error)
+            if n % 10 == 0 or n == len(pending):
+                print('Source audit progress: ' + str(n) + '/' + str(len(pending)) + '.', flush=True)
+    if errors:
+        raise errors[0]
+    return [item for key in sources for item in results[key]]
 
 
 def coverage_schema(sources, active, cfg):
-    # Nest each corrected task under its source. No second inventory, duplicated
-    # title or model-computed integer row index is needed to prove coverage.
+    if len(sources) != 1:
+        raise Stop('Each independent audit must contain exactly one complete thread.')
     item = board_schema(sources, active, cfg)['properties']['items']['items']
-    string = {'type': 'string'}
-    review = {'type': 'object', 'properties': {
-        'sourceKey': {'type': 'string', 'enum': list(sources) or ['NONE']},
+    ids = [m['evidence_id'] for source in sources.values() for m in source['messages']]
+    # A single source keeps identifier choices closed and the strict schema
+    # below its enum budget. Very large threads still get runtime proof checks.
+    if len(ids) <= 700:
+        item['properties']['evidenceIds']['items'] = {'type': 'string', 'enum': ids}
+    if len(ids) <= 100:
+        item['properties']['roleFacts']['items']['properties']['sourceId'] = {'type': 'string', 'enum': ids}
+        for field in ['completionFact', 'progressFact']:
+            item['properties'][field]['properties']['sourceId'] = {'type': 'string', 'enum': [''] + ids}
+    return {'type': 'object', 'properties': {
         'items': {'type': 'array', 'items': item},
-        'exclusionReason': string, 'exclusionEvidenceId': string},
-        'required': ['sourceKey', 'items', 'exclusionReason', 'exclusionEvidenceId'],
-        'additionalProperties': False}
-    return {'type': 'object', 'properties': {'sourceReviews': {'type': 'array', 'items': review}},
-            'required': ['sourceReviews'], 'additionalProperties': False}
+        'exclusionReason': {'type': 'string'},
+        'exclusionEvidenceId': {'type': 'string', **({'enum': [''] + ids} if len(ids) <= 100 else {})}},
+        'required': ['items', 'exclusionReason', 'exclusionEvidenceId'], 'additionalProperties': False}
 
 
 class CoverageAuditError(Stop):
@@ -559,15 +578,15 @@ def validate_source_reviews(result, sources, cfg=None):
 
 COVERAGE_RULES = """독립적인 누락 검토를 수행한다. proposedItems는 정답이 아닌 초안이다.
 원문 본문부터 마지막 댓글까지 다시 읽고, 주차·차수·산출물별로 누락 및 잘못된 담당을 수정한다.
-이번 검토 응답의 최상위에는 sourceReviews만 반환한다. 모든 sourceKey를 정확히 한 번씩 기록한다.
-각 sourceReviews[].items에 그 스레드의 검토 완료된 업무 전체를 직접 반환한다. items의 sourceKey는 바깥 sourceKey와 같다.
+이번 요청에는 하나의 완전한 스레드만 있다. 응답에는 items, exclusionReason, exclusionEvidenceId만 반환한다.
+items에 이 스레드의 검토 완료된 업무 전체를 직접 반환한다. 모든 item의 sourceKey는 입력의 유일한 sourceKey와 같다.
 별도 연결표나 행 번호는 만들지 않는다. 3주차·4주차처럼 담당이 다르면 각각의 업무로 반환한다.
 일정 공지로 실제 제작 업무를 대체하지 않는다. 1차·2차 대상과 컷별 분장도 확인하고 2차 미배정은 추정하지 않는다.
 owners의 각 담당자는 roleFacts의 정확한 원문 인용으로 증명한다. 주차별·컷별 분장 문장과 본인의 제작·전달 선언도 직접 근거다. cc·참고만으로 배정하지 않는다.
 기존 수동 업무는 유지하며 별개 신규 산출물만 새로 추가한다. 완료·담당·마감의 근거 검증 규칙은 그대로 적용한다.
 반영할 업무가 없으면 items=[]와 구체적인 exclusionReason 및 해당 스레드의 실제 evidence_id 하나를 exclusionEvidenceId에 반환한다.
 작업을 맡거나 제작·전달한 디자이너의 직접 선언이 있으면 업무 없음으로 제외하지 않는다.
-업무가 있으면 exclusionReason과 exclusionEvidenceId는 빈 문자열로 둔다. repair가 있으면 모든 지적을 수정한 전체 sourceReviews를 다시 반환한다."""
+업무가 있으면 exclusionReason과 exclusionEvidenceId는 빈 문자열로 둔다. repair가 있으면 모든 지적을 수정한 전체 items와 제외 사유를 다시 반환한다."""
 
 
 def summarize_batch(sources, active, cfg, period, repair=None, audit_items=None):
@@ -587,14 +606,17 @@ def summarize_batch(sources, active, cfg, period, repair=None, audit_items=None)
         'instructions': cfg.get('source_policy', '') + '\n' + os.environ.get('REPORT_POLICY', '') + '\n' + BOARD_RULES + ('\n' + COVERAGE_RULES if auditing else ''),
         'input': json.dumps(data, ensure_ascii=False), 'max_output_tokens': 16000,
         'text': {'format': {'type': 'json_schema', 'name': 'design_board', 'strict': True,
-                           'schema': coverage_schema(sources, active, cfg) if auditing else board_schema(sources, active, cfg)}}}, 'OpenAI')
+                           'schema': coverage_schema(sources, active, cfg) if auditing else board_schema(sources, active, cfg)}}}, 'OpenAI', retry_read=True)
     if result.get('status') != 'completed':
         raise Stop('Board AI response did not complete.')
     try:
         output = ''.join(c.get('text', '') for row in result.get('output', []) for c in row.get('content', [])
                          if c.get('type') == 'output_text')
         parsed = json.loads(output)
-        return validate_source_reviews(parsed, sources, cfg) if auditing else parsed['items']
+        if auditing:
+            review = {'sourceKey': next(iter(sources)), **parsed}
+            return validate_source_reviews({'sourceReviews': [review]}, sources, cfg)
+        return parsed['items']
     except (ValueError, KeyError, TypeError):
         raise Stop('Board AI output is invalid.') from None
 

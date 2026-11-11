@@ -88,13 +88,45 @@ class BoardTests(unittest.TestCase):
         def response(value):
             return {'status':'completed','output':[{'content':[{'type':'output_text','text':json.dumps(value)}]}]}
         with patch.dict(os.environ,{'OPENAI_API_KEY':'synthetic'}),patch.object(board,'http_json',side_effect=[
-                response({'items':[]}),response({'sourceReviews':[review]})]) as request:
+                response({'items':[]}),response({'items':[self.item],'exclusionReason':'','exclusionEvidenceId':''})]) as request:
             items=board.summarize(self.sources,[],self.cfg,self.period)
         self.assertEqual(items,[self.item]);self.assertEqual(request.call_count,2)
         self.assertEqual(json.loads(request.call_args.args[2]['input'])['proposedItems'],[])
         schema=request.call_args.args[2]['text']['format']['schema']
-        self.assertEqual(schema['required'],['sourceReviews'])
+        self.assertEqual(schema['required'],['items','exclusionReason','exclusionEvidenceId'])
         self.assertNotIn('itemIndexes',json.dumps(schema))
+
+    def test_audits_are_isolated_and_evidence_ids_are_closed_per_thread(self):
+        import copy
+        other=copy.deepcopy(self.sources[self.key]);other_key='COTHER:'+stamp(13)
+        for message in other['messages']:
+            message['evidence_id']='OTHER-'+message['evidence_id']
+        other['current_ids']=['OTHER-E1','OTHER-E2']
+        sources={**self.sources,other_key:other}
+        proposed=[self.item,{**self.item,'sourceKey':other_key}]
+        calls=[]
+        def check(one,active,cfg,period,repair,rows):
+            key=next(iter(one));self.assertEqual(len(one),1)
+            self.assertTrue(all(row['sourceKey']==key for row in rows))
+            schema=board.coverage_schema(one,active,cfg)
+            allowed=schema['properties']['items']['items']['properties']['evidenceIds']['items']['enum']
+            self.assertEqual(allowed,[m['evidence_id'] for m in one[key]['messages']])
+            calls.append(key);return rows
+        with patch.object(board,'summarize_batch',return_value=proposed),patch.object(board,'audit_with_repair',side_effect=check),contextlib.redirect_stdout(io.StringIO()):
+            result=board.summarize(sources,[],self.cfg,self.period)
+        self.assertEqual(set(calls),set(sources));self.assertEqual(result,proposed)
+        with self.assertRaises(board.Stop):board.coverage_schema(sources,[],self.cfg)
+
+    def test_single_source_audit_schema_stays_below_enum_budget_for_long_threads(self):
+        def count(value):
+            if isinstance(value,dict):return len(value.get('enum',[]))+sum(count(v) for k,v in value.items() if k!='enum')
+            if isinstance(value,list):return sum(count(v) for v in value)
+            return 0
+        for n in [100,200,700,1200]:
+            source={'messages':[{'evidence_id':'E'+str(i)} for i in range(n)]}
+            schema=board.coverage_schema({'one-thread':source},[],self.cfg)
+            self.assertLess(count(schema),1000)
+            self.assertEqual(schema['properties']['items']['items']['properties']['sourceKey']['enum'],['one-thread'])
 
     def test_summary_receives_corrected_link_and_full_current_baseline(self):
         baseline={'id':'existing','title':'합성 업무','owner':'수정 담당','localEdited':True,
