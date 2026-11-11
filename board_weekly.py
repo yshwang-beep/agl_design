@@ -487,7 +487,7 @@ def coverage_schema(sources, active, cfg):
     item['required'].remove('owners')
     proofs = owner_proof_catalog(sources, cfg)
     item['properties']['ownerProofIds'] = {'type': 'array', 'items': {
-        'type': 'string', **({'enum': list(proofs) or ['NONE']} if len(proofs) <= 150 else {})}}
+        'type': 'string', 'enum': ['UNASSIGNED'] + list(proofs)}}
     item['required'].append('ownerProofIds')
     item['properties']['roleFacts']['items']['properties']['kind']['enum'] = ['requester', 'collaborator']
     ids = [m['evidence_id'] for source in sources.values() for m in source['messages']]
@@ -499,16 +499,33 @@ def coverage_schema(sources, active, cfg):
         item['properties']['roleFacts']['items']['properties']['sourceId'] = {'type': 'string', 'enum': ids}
         for field in ['completionFact', 'progressFact']:
             item['properties'][field]['properties']['sourceId'] = {'type': 'string', 'enum': [''] + ids}
-    return {'type': 'object', 'properties': {
+    schema = {'type': 'object', 'properties': {
         'items': {'type': 'array', 'items': item},
         'exclusionReason': {'type': 'string'},
         'exclusionEvidenceId': {'type': 'string', **({'enum': [''] + ids} if len(ids) <= 100 else {})}},
         'required': ['items', 'exclusionReason', 'exclusionEvidenceId'], 'additionalProperties': False}
+    def enum_count(value):
+        if isinstance(value, dict):
+            return len(value.get('enum', [])) + sum(enum_count(v) for k, v in value.items() if k != 'enum')
+        return sum(map(enum_count, value)) if isinstance(value, list) else 0
+    # Ownership choices must always be closed. Other message identifiers retain
+    # runtime source checks if enumerating them would exceed the schema budget.
+    references = [item['properties']['evidenceIds']['items'],
+                  item['properties']['roleFacts']['items']['properties']['sourceId'],
+                  item['properties']['completionFact']['properties']['sourceId'],
+                  item['properties']['progressFact']['properties']['sourceId'],
+                  schema['properties']['exclusionEvidenceId']]
+    for reference in references:
+        if enum_count(schema) > 980:
+            reference.pop('enum', None)
+    if enum_count(schema) > 1000:
+        raise Stop('Verified owner proof choices exceed the schema budget; review required.')
+    return schema
 
 
 def owner_proof_catalog(sources, cfg):
     directory = cfg['designers'] + cfg.get('collaborators', [])
-    proofs = {}
+    unique = {}
     for source in sources.values():
         messages = {m['evidence_id']: m for m in source['messages']}
         for eid, message in messages.items():
@@ -521,15 +538,17 @@ def owner_proof_catalog(sources, cfg):
                 for quote in candidates:
                     fact = {'kind': 'owner', 'actor': person['id'], 'sourceId': eid, 'quote': quote}
                     if direct_role(fact, messages, directory):
-                        proofs['P' + str(len(proofs) + 1)] = fact
+                        unique[(person['id'], quote)] = fact
                         break
-    return proofs
+    return {'P' + str(n): fact for n, fact in enumerate(unique.values(), 1)}
 
 
 def resolve_owner_proofs(parsed, proofs):
     for item in parsed['items']:
         facts = []
         for proof_id in dict.fromkeys(item.pop('ownerProofIds')):
+            if proof_id == 'UNASSIGNED':
+                continue
             if proof_id not in proofs:
                 raise Stop('An owner proof is unknown or belongs to another source.')
             facts.append(dict(proofs[proof_id]))
@@ -637,7 +656,7 @@ items에 이 스레드의 검토 완료된 업무 전체를 직접 반환한다.
 일정 공지로 실제 제작 업무를 대체하지 않는다. 1차·2차 대상과 컷별 분장도 확인하고 2차 미배정은 추정하지 않는다.
 담당은 verifiedOwnerProofs 중 해당 업무·주차·산출물에 실제로 해당하는 근거 ID를 ownerProofIds에 선택한다.
 담당자를 직접 쓰거나 담당 인용을 다시 작성하지 않는다. 원문과 대조해 잘못된 과거 담당·다른 산출물의 근거를 선택하지 않는다.
-명시적 근거가 없으면 ownerProofIds=[]로 두고 issue에 담당 확인 필요를 표시한다. roleFacts는 requester/collaborator만 반환한다.
+명시적 근거가 없으면 ownerProofIds=[] 또는 ["UNASSIGNED"]로 두고 issue에 담당 확인 필요를 표시한다. roleFacts는 requester/collaborator만 반환한다.
 requiredWeeklyAssignments의 각 배정은 반드시 별도 업무로 포함한다. 제목에는 정확한 N주차를 쓰고 해당 actor의 ownerProofIds를 선택한다.
 기존 제목 유지 규칙 때문에 주차 배정을 생략하지 않는다. 같은 산출물의 제목에서 주차만 빠졌으면 제목에 주차를 명시한다.
 다른 주차의 기존 업무 ID를 재사용하지 않는다. repair.requiredAssignment는 누락된 정확한 주차·담당·원문 ID이며 해당 업무를 복구한다.

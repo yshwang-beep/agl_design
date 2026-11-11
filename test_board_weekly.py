@@ -135,6 +135,26 @@ class BoardTests(unittest.TestCase):
         item=copy.deepcopy(self.item);item['ownerProofIds']=['INVENTED']
         with self.assertRaises(board.Stop):board.resolve_owner_proofs({'items':[item]},proofs)
 
+    def test_unassigned_choice_never_becomes_an_owner(self):
+        import copy
+        item=copy.deepcopy(self.item);item['ownerProofIds']=['UNASSIGNED']
+        resolved=board.resolve_owner_proofs({'items':[item]}, {})['items'][0]
+        self.assertEqual(resolved['owners'],[])
+        self.assertFalse(any(f['kind']=='owner' for f in resolved['roleFacts']))
+
+    def test_owner_choices_stay_closed_in_long_threads_and_duplicate_quotes_use_latest_anchor(self):
+        source={'messages':[{'evidence_id':'E'+str(i),'user':'UTEST1',
+            'text':'제가 배너 '+str(i)+' 작업합니다.'} for i in range(700)]}
+        schema=board.coverage_schema({'one':source},[],self.cfg)
+        fields=schema['properties']['items']['items']['properties']
+        self.assertEqual(len(fields['ownerProofIds']['items']['enum']),701)
+        self.assertIn('UNASSIGNED',fields['ownerProofIds']['items']['enum'])
+        self.assertNotIn('enum',fields['evidenceIds']['items'])
+        source['messages'][-1]['text']=source['messages'][0]['text']
+        proofs=board.owner_proof_catalog({'one':source},self.cfg)
+        self.assertEqual(len(proofs),699)
+        self.assertEqual(proofs['P1']['sourceId'],'E699')
+
     def test_owner_proof_catalog_recovers_assignment_line_without_cc_context(self):
         source={'messages':[{'evidence_id':'E1','user':'UTEST0','text':
             '<@UTEST1> 배너 작업 부탁드립니다.\ncc <@UTEST2> 참고'},
