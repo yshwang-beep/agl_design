@@ -458,7 +458,7 @@ def summarize(sources, active, cfg, period, repair=None):
         # A valid generated row is not proof that every source was represented.
         # Independently re-read the complete threads and require a disposition
         # for each thread before advancing the collection cutoff.
-        items.extend(summarize_batch(batch, local_active, cfg, period, local_repair, audit_items=proposed))
+        items.extend(audit_with_repair(batch, local_active, cfg, period, local_repair, proposed))
         print('Model batch complete: ' + str(n) + '/' + str(len(batches)) + '.', flush=True)
     return items
 
@@ -482,37 +482,66 @@ def coverage_schema(sources, active, cfg):
     return schema
 
 
+class CoverageAuditError(Stop):
+    def __init__(self, failures, result):
+        super().__init__('Source coverage audit failed (' + str(len(failures)) + ' checks); no update accepted.')
+        self.failures, self.result = failures, result
+
+
+def audit_with_repair(sources, active, cfg, period, repair, proposed):
+    for attempt in range(3):
+        try:
+            return summarize_batch(sources, active, cfg, period, repair, audit_items=proposed)
+        except CoverageAuditError as error:
+            if attempt == 2:
+                raise
+            # Source IDs, quotes and drafts stay only in the existing authorized
+            # model request. Public Actions logs contain counts, never content.
+            proposed = error.result['items']
+            repair = {'failures': error.failures, 'previous_items': proposed,
+                      'source_reviews': error.result.get('sourceReviews', [])}
+            print('Source coverage repair required: ' + str(len(error.failures)) + ' check(s).', flush=True)
+
+
 def validate_source_reviews(result, sources):
-    """Fail closed on an unreviewed thread, missing deliverable or owner."""
+    """Check all dispositions together so one repair can fix every bad quote."""
     items, reviews = result['items'], result.get('sourceReviews', [])
-    seen, linked = set(), set()
+    seen, linked, failures = set(), set(), []
+    def fail(key, message):
+        failures.append({'sourceKey': key, 'failure': message})
     for review in reviews:
         key = review['sourceKey']
         if key not in sources or key in seen:
-            raise Stop('Source coverage audit has duplicate or unknown threads.')
+            fail(key, 'Source coverage audit has duplicate or unknown threads.')
+            continue
         seen.add(key)
         messages = {m['evidence_id']: m for m in sources[key]['messages']}
         if not review['deliverables']:
             if (not review['exclusionReason'].strip()
                     or not verified_quote(review['exclusionFact'], messages)):
-                raise Stop('An excluded source requires a quoted explanation.')
+                fail(key, 'An excluded source requires an existing sourceId and an exact verbatim quote from that message; a paraphrase or empty quote is not accepted.')
         for deliverable in review['deliverables']:
             ids, indexes = deliverable['evidenceIds'], deliverable['itemIndexes']
             if not ids or any(e not in messages for e in ids) or not indexes:
-                raise Stop('An audited deliverable has no grounded board row.')
+                fail(key, 'An audited deliverable has no grounded board row.')
             owners = set()
             for index in indexes:
                 if type(index) is not int or not 0 <= index < len(items) or index in linked:
-                    raise Stop('Source coverage audit has invalid row references.')
+                    fail(key, 'Source coverage audit has invalid row references.')
+                    continue
                 item = items[index]
                 if item['sourceKey'] != key or item['title'] != deliverable['title']:
-                    raise Stop('An audited deliverable is missing or merged with another scope.')
+                    fail(key, 'An audited deliverable is missing or merged with another scope.')
                 owners.update(item['owners'])
                 linked.add(index)
             if owners != set(deliverable['owners']):
-                raise Stop('An explicitly assigned designer is missing from the draft.')
-    if seen != set(sources) or linked != set(range(len(items))):
-        raise Stop('Source coverage audit is incomplete; cutoff was not advanced.')
+                fail(key, 'An explicitly assigned designer is missing from the draft.')
+    for key in set(sources) - seen:
+        fail(key, 'Source has no disposition; include it exactly once.')
+    if linked != set(range(len(items))):
+        fail('', 'Every item must be connected exactly once to its source deliverable.')
+    if failures:
+        raise CoverageAuditError(failures, result)
     return items
 
 
@@ -523,7 +552,7 @@ COVERAGE_RULES = '''독립적인 누락 검토를 수행한다. proposedItems는
 items에는 누락·잘못된 분장을 수정한 전체 초안을 반환한다. 기존 수동 업무는 보존하고 별개 산출물만 신규로 추가한다.
 sourceReviews에는 모든 sourceKey를 정확히 한 번씩 기록한다. deliverables는 해당 스레드의 독립 산출물/주차별 목록이다.
 각 deliverable의 title은 대응 items의 title과 같고 owners는 해당 items의 명시적 담당 ID 전체이며, evidenceIds는 실제 원문 ID, itemIndexes는 items의 0부터 시작하는 인덱스다.
-각 item은 정확히 한 deliverable에 연결한다. 업무가 없는 스레드는 deliverables=[]와 구체적인 exclusionReason, 실제 원문 문구인 exclusionFact를 반드시 남긴다.
+각 item은 정확히 한 deliverable에 연결한다. 업무가 없는 스레드는 deliverables=[]와 구체적인 exclusionReason, 실제 원문 문구인 exclusionFact를 반드시 남긴다. exclusionFact.sourceId는 그 스레드의 실제 evidence_id이며 quote는 해당 메시지에서 그대로 복사한 연속 부분문자열이다. 요약·의역하거나 빈 인용을 쓰지 않는다.
 산출물을 추출하지 못했다는 이유만으로 업무 없음으로 제외하지 않는다. 근거 없는 상태·완료·담당을 만들지 않는다.'''
 
 

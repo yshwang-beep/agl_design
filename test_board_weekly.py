@@ -15,6 +15,33 @@ def stamp(day, hour=12):
 
 
 class BoardTests(unittest.TestCase):
+    def test_audit_repairs_all_missing_quotes_without_publishing_source_content(self):
+        import copy
+        second=copy.deepcopy(self.sources[self.key]);second_key=self.key+'-second'
+        sources={**self.sources,second_key:second}
+        def review(key):
+            return {'sourceKey':key,'deliverables':[],'exclusionReason':'참고 알림',
+                    'exclusionFact':{'sourceId':'','quote':''}}
+        bad={'items':[],'sourceReviews':[review(self.key),review(second_key)]}
+        with self.assertRaises(board.CoverageAuditError) as caught:
+            board.validate_source_reviews(bad,sources)
+        self.assertEqual(len(caught.exception.failures),2)
+        output=io.StringIO()
+        with patch.object(board,'summarize_batch',side_effect=[caught.exception,[]]) as model,contextlib.redirect_stdout(output):
+            self.assertEqual(board.audit_with_repair(sources,[],self.cfg,self.period,None,[]),[])
+        repair=model.call_args.args[4]
+        self.assertEqual(len(repair['failures']),2)
+        self.assertEqual(repair['source_reviews'],bad['sourceReviews'])
+        self.assertNotIn(self.key,output.getvalue())
+        self.assertIn('2 check(s)',output.getvalue())
+
+    def test_unrepaired_audit_never_returns_a_partial_success(self):
+        failure=board.CoverageAuditError([{'sourceKey':self.key,'failure':'missing quote'}],{'items':[]})
+        with patch.object(board,'summarize_batch',side_effect=failure) as model,contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(board.CoverageAuditError):
+                board.audit_with_repair(self.sources,[],self.cfg,self.period,None,[])
+        self.assertEqual(model.call_count,3)
+
     def test_coverage_audit_rejects_silent_source_deliverable_and_owner_omissions(self):
         import copy
         result={'items':[self.item], 'sourceReviews':[{
