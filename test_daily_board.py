@@ -5,6 +5,14 @@ import daily_board as daily
 
 
 class DailyTests(unittest.TestCase):
+    def test_review_revisits_two_weeks_without_changing_cursor_or_past_cutoff(self):
+        start,end=daily.window(dt.date(2026,11,11),{'meta':{'daily':{'sourceCutoff':'2026-11-10T06:59:59+09:00'}}})
+        self.assertEqual(start.isoformat(),'2026-11-10T07:00:00+09:00')
+        self.assertEqual(daily.review_start(start,end).isoformat(),'2026-10-28T07:00:00+09:00')
+        self.assertEqual(daily.review_start(start,end,backfill=True),start)
+        older=start-dt.timedelta(days=30)
+        self.assertEqual(daily.review_start(older,end),older)
+
     def test_shared_historical_reads_filter_future_messages_and_fetch_once(self):
         client=daily.AsOfSlack('synthetic', '200.000000')
         rows=[{'ts':'100.000000','text':'before'},{'ts':'150.000000','text':'later'}]
@@ -29,6 +37,12 @@ class DailyTests(unittest.TestCase):
         self.assertEqual(len(rows[0]['evidence']),2)
         self.assertEqual(rows[0]['reviewed'],'no')
         self.assertIn('원문 확인 필요',rows[0]['verification'])
+
+    def test_separate_weeks_and_phases_cannot_silently_collapse(self):
+        for titles in [('인스타그램 11월 3주차','인스타그램 11월 4주차'),('모델 이미지 1차 제작','모델 이미지 2차 제작'),('브랜드 배너 제작','브랜드 썸네일 제작')]:
+            rows=[{'sourceTaskId':'existing','title':title,'evidence':[{'channelId':'CTEST','ts':'100.000000','url':'test'}]} for title in titles]
+            with self.subTest(titles=titles),self.assertRaises(daily.board.Stop):
+                daily.collapse_daily_tasks(rows)
 
     def test_window_is_seven_am_kst_and_continues_after_last_success(self):
         date = dt.date(2026, 11, 5)

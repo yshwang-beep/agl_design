@@ -15,6 +15,43 @@ def stamp(day, hour=12):
 
 
 class BoardTests(unittest.TestCase):
+    def test_coverage_audit_rejects_silent_source_deliverable_and_owner_omissions(self):
+        import copy
+        result={'items':[self.item], 'sourceReviews':[{
+            'sourceKey':self.key,'deliverables':[{'title':self.item['title'],
+                'owners':self.item['owners'],'evidenceIds':self.item['evidenceIds'],'itemIndexes':[0]}],
+            'exclusionReason':'','exclusionFact':{'sourceId':'','quote':''}}]}
+        self.assertEqual(board.validate_source_reviews(result,self.sources),[self.item])
+        missing_thread=copy.deepcopy(result);missing_thread['sourceReviews']=[]
+        missing_row=copy.deepcopy(result);missing_row['sourceReviews'][0]['deliverables'][0]['itemIndexes']=[]
+        missing_owner=copy.deepcopy(result);missing_owner['sourceReviews'][0]['deliverables'][0]['owners']=['another-designer']
+        merged_week=copy.deepcopy(result);merged_week['sourceReviews'][0]['deliverables'][0]['title']='다른 주차 업무'
+        for invalid in [missing_thread,missing_row,missing_owner,merged_week]:
+            with self.subTest(invalid=invalid),self.assertRaises(board.Stop):
+                board.validate_source_reviews(invalid,self.sources)
+
+    def test_coverage_exclusion_requires_real_source_quote(self):
+        m=self.sources[self.key]['messages'][0]
+        review={'sourceKey':self.key,'deliverables':[],'exclusionReason':'업무가 아닌 참고 안내',
+                'exclusionFact':{'sourceId':m['evidence_id'],'quote':m['text']}}
+        self.assertEqual(board.validate_source_reviews({'items':[],'sourceReviews':[review]},self.sources),[])
+        review['exclusionFact']['quote']='원문에 없는 제외 근거'
+        with self.assertRaises(board.Stop):
+            board.validate_source_reviews({'items':[],'sourceReviews':[review]},self.sources)
+
+    def test_summary_independent_audit_can_restore_an_omitted_assignment(self):
+        review={'sourceKey':self.key,'deliverables':[{'title':self.item['title'],
+                'owners':self.item['owners'],'evidenceIds':self.item['evidenceIds'],'itemIndexes':[0]}],
+                'exclusionReason':'','exclusionFact':{'sourceId':'','quote':''}}
+        def response(value):
+            return {'status':'completed','output':[{'content':[{'type':'output_text','text':json.dumps(value)}]}]}
+        with patch.dict(os.environ,{'OPENAI_API_KEY':'synthetic'}),patch.object(board,'http_json',side_effect=[
+                response({'items':[]}),response({'items':[self.item],'sourceReviews':[review]})]) as request:
+            items=board.summarize(self.sources,[],self.cfg,self.period)
+        self.assertEqual(items,[self.item]);self.assertEqual(request.call_count,2)
+        self.assertEqual(json.loads(request.call_args.args[2]['input'])['proposedItems'],[])
+        self.assertIn('sourceReviews',request.call_args.args[2]['text']['format']['schema']['required'])
+
     def test_summary_receives_corrected_link_and_full_current_baseline(self):
         baseline={'id':'existing','title':'합성 업무','owner':'수정 담당','localEdited':True,
                   'link':'https://example.slack.com/archives/CTEST/p1792722090384809',
@@ -180,6 +217,8 @@ class BoardTests(unittest.TestCase):
         self.assertEqual(text.count('<@UREVIEWER>'), 1)
         self.assertEqual(text.count('<@UCEO>'), 1)
         self.assertTrue(text.startswith('*[디자인팀 주간 업무 보고] 담당별 업무 현황 대시보드 점검 안내*\n<!subteam^SGROUP>'))
+        self.assertIn('• *수정 기한:* 금일 10:00 전까지', text)
+        self.assertIn('|담당별 업무 현황 대시보드 바로가기>', text)
 
     def test_draft_repair_identifies_all_bad_rows_and_cross_row_duplicates(self):
         import copy

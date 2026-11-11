@@ -73,6 +73,13 @@ def ensure_window(now, date):
         raise board.Stop('Daily collection writes are limited to 07:00–08:30 KST.')
 
 
+def review_start(start, end, backfill=False):
+    # Reconsider missed deliverables even when their thread has no new reply.
+    # The incremental commit cursor stays unchanged; historical views keep
+    # their original seven-day scope and never see future messages.
+    return start if backfill else min(start, end - dt.timedelta(days=14))
+
+
 def draft(sources, active, cfg, period, start, end):
     repair = None
     for _ in range(3):
@@ -95,6 +102,8 @@ def collapse_daily_tasks(tasks):
         if prior is None:
             grouped[key] = task
             continue
+        if not board.same_deliverable_title(prior['title'], task['title']):
+            raise board.Stop('Separate deliverables cannot share one existing task ID.')
         latest = max((prior, task), key=lambda row: max(float(e['ts']) for e in row['evidence']))
         evidence = {(e['channelId'], e['ts']): e for row in (prior, task) for e in row['evidence']}
         grouped[key] = dict(latest, evidence=sorted(evidence.values(), key=lambda e: float(e['ts']))[-200:],
@@ -169,9 +178,10 @@ def execute(now=None):
         identity = user.call('auth.test')
         if identity.get('team_id') != cfg['team_id'] or identity.get('bot_id'):
             raise board.Stop('Unexpected collection identity.')
-        sources, coverage = board.collect_sources(user, cfg, snapshot, start, end)
-        period = {'start': start.date().isoformat(), 'end': end.date().isoformat()}
-        tasks, note = draft(sources, active, cfg, period, start, end)
+        reviewed_from = review_start(start, end, backfill)
+        sources, coverage = board.collect_sources(user, cfg, snapshot, reviewed_from, end)
+        period = {'start': reviewed_from.date().isoformat(), 'end': end.date().isoformat()}
+        tasks, note = draft(sources, active, cfg, period, reviewed_from, end)
         tasks = collapse_daily_tasks(tasks)
         if not publish:
             print('PASS: Daily draft validated without writes: ' + date_string + '; tasks=' + str(len(tasks)), flush=True)
@@ -183,6 +193,7 @@ def execute(now=None):
             raise board.Stop('Missing GitHub run identity.')
         result = api.call('commit', {'runId': run_id, 'expectedRevision': snapshot['revision'],
                                     'tasks': tasks, 'coverage': coverage, 'sourceStart': start.isoformat(),
+                                    **({'reviewStart': reviewed_from.isoformat()} if not backfill else {}),
                                     'sourceCutoff': (end - dt.timedelta(seconds=1)).isoformat()})
         verified = api.call('status')
         if verified.get('status') != 'committed' or verified.get('revision') != result.get('revision') or verified.get('runId') != result.get('runId'):
