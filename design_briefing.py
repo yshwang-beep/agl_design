@@ -7,6 +7,7 @@ import json
 import os
 import re
 import socket
+import struct
 import sys
 import time
 import urllib.error
@@ -402,7 +403,7 @@ def verify_item(item, day, category, allowed, excluded):
     if content_type not in ('image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif') or not data:
         raise Stop('Thumbnail is not a readable image.')
     item['source_url'] = url
-    item['image_url'] = image_final
+    item['image_url'] = compact_image(image_final)
     return item
 
 
@@ -430,6 +431,79 @@ def verify_upcoming_editorials():
             verify_editorial(day)
             checked += 1
     print('Upcoming owner-approved issues verified:', checked)
+
+
+
+def compact_image(source):
+    # Slack displays small images at natural size; do not crop or stretch.
+    safe_url(source)
+    public_host(source)
+    query = urllib.parse.urlencode({'url': source, 'w': 400, 'h': 225,
+                                   'fit': 'inside', 'we': '', 'output': 'png'})
+    url = 'https://images.weserv.nl/?' + query
+    data, kind, final = public_read(url)
+    if kind != 'image/png' or len(data) < 24 or data[:8] != b'\x89PNG\r\n\x1a\n' or data[12:16] != b'IHDR':
+        raise Stop('Compact thumbnail is not a verified PNG.')
+    width, height = struct.unpack('>II', data[16:24])
+    if not (1 <= width <= 400 and 1 <= height <= 225):
+        raise Stop('Compact thumbnail dimensions exceed 400 x 225.')
+    return final
+
+
+def compact_existing_blocks(blocks):
+    result = json.loads(json.dumps(blocks))
+    count = 0
+    for index, block in enumerate(result):
+        if block.get('type') == 'image':
+            source = block.get('image_url', '')
+            if urllib.parse.urlsplit(source).hostname == 'images.weserv.nl':
+                continue
+            result[index] = {'type': 'image', 'image_url': compact_image(source),
+                             'alt_text': block['alt_text']}
+            count += 1
+    return result, count
+
+
+def resize_today_briefing():
+    # One-time owner request, confined to the already-published Nov 11 issue.
+    now = dt.datetime.now(KST)
+    if now.date() != dt.date(2026, 11, 11):
+        raise Stop('One-time image update is restricted to 2026-11-11.')
+    if os.environ.get('BRIEFING_PUBLISH') == 'true':
+        raise Stop('Do not combine existing-message update with new publication.')
+    channel = os.environ['BRIEFING_CHANNEL_ID']
+    if channel != 'C0AM4AC7WA3':
+        raise Stop('Existing-message update destination mismatch.')
+    auth = slack('auth.test', {})
+    if auth.get('team_id') != os.environ['SLACK_TEAM_ID'] or auth.get('user_id') != os.environ['SLACK_BOT_USER_ID']:
+        raise Stop('Slack bot/workspace mismatch.')
+    rows = history(channel, now)
+    candidates = [m for m in rows if m.get('user') == auth['user_id']
+                  and m.get('ts') == '1794355210.749229'
+                  and m.get('metadata', {}).get('event_type') == EVENT_TYPE
+                  and m['metadata']['event_payload'].get('date') == '2026-11-11']
+    if len(candidates) != 1:
+        raise Stop('Expected existing briefing was not uniquely found.')
+    original = candidates[0]
+    blocks, changed = compact_existing_blocks(original.get('blocks', []))
+    if changed == 0:
+        print('Existing briefing already uses compact images; no update needed.')
+        return
+    if changed != 1:
+        raise Stop('Expected exactly one existing image block.')
+    params = {'channel': channel, 'oldest': original['ts'], 'latest': original['ts'],
+              'inclusive': 'true', 'limit': 1, 'include_all_metadata': 'true'}
+    latest = slack('conversations.history', params).get('messages', [])
+    if len(latest) != 1 or latest[0].get('blocks') != original.get('blocks'):
+        raise Stop('Existing message changed during preparation; no update sent.')
+    slack('chat.update', {'channel': channel, 'ts': original['ts'],
+                         'text': original['text'], 'blocks': blocks}, write=True)
+    updated = slack('conversations.history', params).get('messages', [])
+    if len(updated) != 1 or not same_payload(updated[0], blocks):
+        raise Stop('Image update readback mismatch; do not repost.')
+    if updated[0].get('metadata') != original.get('metadata') or updated[0].get('text') != original.get('text'):
+        raise Stop('Existing briefing text/metadata readback mismatch; inspect message.')
+    print('Updated existing briefing image to maximum 400 x 225; text and metadata preserved. No new message sent.')
 
 
 def escape(value):
@@ -473,6 +547,9 @@ def same_payload(message, expected):
 
 
 def main():
+    if os.environ.get('BRIEFING_RESIZE_TODAY') == 'true':
+        resize_today_briefing()
+        return
     now = dt.datetime.now(KST)
     day = now.date()
     extras = json.loads(os.environ.get('BRIEFING_EXTRA_HOLIDAYS', '[]'))
@@ -644,6 +721,32 @@ def self_test():
             kind, item = editorial_override(dt.date(2026,11,13))
             item['image_url'] = 'https://example.com/image.jpg'
             self.assertIn('이번 주 전시 소식', json.dumps(blocks_for([item], kind, '<!subteam^SGROUP>', dt.date(2026,11,13)), ensure_ascii=False))
+
+        def test_compact_image_rejects_oversized_output_and_preserves_source_query(self):
+            def png(w, h):
+                return b'\x89PNG\r\n\x1a\n' + b'\x00\x00\x00\x0dIHDR' + struct.pack('>II', w, h)
+            with patch(__name__ + '.public_host'), patch(__name__ + '.public_read', return_value=(png(400,225), 'image/png', 'https://images.weserv.nl/test')) as request:
+                self.assertEqual(compact_image('https://example.com/image?token=public-value'), 'https://images.weserv.nl/test')
+                args = urllib.parse.parse_qs(urllib.parse.urlsplit(request.call_args.args[0]).query)
+                self.assertEqual(args['url'], ['https://example.com/image?token=public-value'])
+                self.assertEqual(args['fit'], ['inside'])
+            with patch(__name__ + '.public_host'), patch(__name__ + '.public_read', return_value=(png(600,338), 'image/png', 'https://example.com/large')):
+                with self.assertRaises(Stop):
+                    compact_image('https://example.com/image')
+
+        def test_existing_compact_update_changes_only_image(self):
+            source = [{'type':'section','block_id':'keep','text':{'type':'mrkdwn','text':'unchanged'}},
+                      {'type':'image','block_id':'old','image_url':'https://example.com/a','alt_text':'original','image_width':1200}]
+            with patch(__name__ + '.compact_image', return_value='https://images.weserv.nl/small'):
+                edited, count = compact_existing_blocks(source)
+            self.assertEqual(count, 1)
+            self.assertEqual(edited[0], source[0])
+            self.assertEqual(source[1]['image_url'], 'https://example.com/a')
+            self.assertEqual(edited[1], {'type':'image','image_url':'https://images.weserv.nl/small','alt_text':'original'})
+            with patch(__name__ + '.compact_image') as convert:
+                again, count = compact_existing_blocks(edited)
+                self.assertEqual(count, 0)
+                convert.assert_not_called()
 
         def test_untrusted_text_cannot_tag(self):
             self.assertNotIn('<!', escape('<!channel>'))
