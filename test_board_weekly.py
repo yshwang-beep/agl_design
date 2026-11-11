@@ -84,17 +84,44 @@ class BoardTests(unittest.TestCase):
         self.assertFalse(board.direct_role({'kind':'owner','actor':'UTEST1','sourceId':'E2','quote':messages['E2']['text']},messages))
 
     def test_summary_independent_audit_can_restore_an_omitted_assignment(self):
-        review={'sourceKey':self.key,'items':[self.item],'exclusionReason':'','exclusionEvidenceId':''}
+        import copy
+        audited=copy.deepcopy(self.item)
+        audited.pop('owners');audited['ownerProofIds']=['P1']
+        audited['roleFacts']=[f for f in audited['roleFacts'] if f['kind']!='owner']
         def response(value):
             return {'status':'completed','output':[{'content':[{'type':'output_text','text':json.dumps(value)}]}]}
         with patch.dict(os.environ,{'OPENAI_API_KEY':'synthetic'}),patch.object(board,'http_json',side_effect=[
-                response({'items':[]}),response({'items':[self.item],'exclusionReason':'','exclusionEvidenceId':''})]) as request:
+                response({'items':[]}),response({'items':[audited],'exclusionReason':'','exclusionEvidenceId':''})]) as request:
             items=board.summarize(self.sources,[],self.cfg,self.period)
-        self.assertEqual(items,[self.item]);self.assertEqual(request.call_count,2)
+        self.assertEqual(items[0]['owners'],self.item['owners']);self.assertEqual(request.call_count,2)
+        self.assertTrue(board.direct_role(items[0]['roleFacts'][-1],{m['evidence_id']:m for m in self.sources[self.key]['messages']}))
         self.assertEqual(json.loads(request.call_args.args[2]['input'])['proposedItems'],[])
         schema=request.call_args.args[2]['text']['format']['schema']
         self.assertEqual(schema['required'],['items','exclusionReason','exclusionEvidenceId'])
         self.assertNotIn('itemIndexes',json.dumps(schema))
+
+    def test_owner_proof_selection_preserves_exact_quotes_and_rejects_unknown_ids(self):
+        import copy
+        source={'messages':[{'evidence_id':'E1','user':'UTEST0','text':
+            '3주차: <@UTEST1>\n4주차: <@UTEST2>\ncc <@UTEST3> 참고'}]}
+        proofs=board.owner_proof_catalog({'one':source},self.cfg)
+        self.assertEqual({f['actor'] for f in proofs.values()},{'UTEST1','UTEST2'})
+        selected=next(k for k,f in proofs.items() if f['actor']=='UTEST2')
+        item=copy.deepcopy(self.item);item.pop('owners');item['ownerProofIds']=[selected]
+        result=board.resolve_owner_proofs({'items':[item]},proofs)['items'][0]
+        self.assertEqual(result['owners'],['UTEST2'])
+        self.assertEqual(result['roleFacts'][-1]['quote'],'4주차: <@UTEST2>')
+        self.assertNotIn('ownerProofIds',result)
+        item=copy.deepcopy(self.item);item['ownerProofIds']=['INVENTED']
+        with self.assertRaises(board.Stop):board.resolve_owner_proofs({'items':[item]},proofs)
+
+    def test_owner_proof_catalog_recovers_assignment_line_without_cc_context(self):
+        source={'messages':[{'evidence_id':'E1','user':'UTEST0','text':
+            '<@UTEST1> 배너 작업 부탁드립니다.\ncc <@UTEST2> 참고'},
+            {'evidence_id':'E2','user':'UTEST2','text':'배너 작업하여 전달드립니다.'}]}
+        proofs=board.owner_proof_catalog({'one':source},self.cfg)
+        self.assertEqual({f['actor'] for f in proofs.values()},{'UTEST1','UTEST2'})
+        self.assertTrue(all(board.direct_role(f,{m['evidence_id']:m for m in source['messages']}) for f in proofs.values()))
 
     def test_audits_are_isolated_and_evidence_ids_are_closed_per_thread(self):
         import copy

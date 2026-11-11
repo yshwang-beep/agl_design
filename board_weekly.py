@@ -481,6 +481,15 @@ def coverage_schema(sources, active, cfg):
     if len(sources) != 1:
         raise Stop('Each independent audit must contain exactly one complete thread.')
     item = board_schema(sources, active, cfg)['properties']['items']['items']
+    # Select verified source quotations by ID instead of asking the model to
+    # transcribe them. The same direct-role validator still checks every proof.
+    del item['properties']['owners']
+    item['required'].remove('owners')
+    proofs = owner_proof_catalog(sources, cfg)
+    item['properties']['ownerProofIds'] = {'type': 'array', 'items': {
+        'type': 'string', **({'enum': list(proofs) or ['NONE']} if len(proofs) <= 150 else {})}}
+    item['required'].append('ownerProofIds')
+    item['properties']['roleFacts']['items']['properties']['kind']['enum'] = ['requester', 'collaborator']
     ids = [m['evidence_id'] for source in sources.values() for m in source['messages']]
     # A single source keeps identifier choices closed and the strict schema
     # below its enum budget. Very large threads still get runtime proof checks.
@@ -495,6 +504,38 @@ def coverage_schema(sources, active, cfg):
         'exclusionReason': {'type': 'string'},
         'exclusionEvidenceId': {'type': 'string', **({'enum': [''] + ids} if len(ids) <= 100 else {})}},
         'required': ['items', 'exclusionReason', 'exclusionEvidenceId'], 'additionalProperties': False}
+
+
+def owner_proof_catalog(sources, cfg):
+    directory = cfg['designers'] + cfg.get('collaborators', [])
+    proofs = {}
+    for source in sources.values():
+        messages = {m['evidence_id']: m for m in source['messages']}
+        for eid, message in messages.items():
+            text = message.get('text', '')
+            candidates = set(text.splitlines())
+            candidates.update(re.split(r'(?<=[.!?。])\s+', text))
+            candidates.add(text)
+            candidates = sorted((q for q in candidates if q.strip()), key=lambda q: (len(q), q))
+            for person in cfg['designers']:
+                for quote in candidates:
+                    fact = {'kind': 'owner', 'actor': person['id'], 'sourceId': eid, 'quote': quote}
+                    if direct_role(fact, messages, directory):
+                        proofs['P' + str(len(proofs) + 1)] = fact
+                        break
+    return proofs
+
+
+def resolve_owner_proofs(parsed, proofs):
+    for item in parsed['items']:
+        facts = []
+        for proof_id in dict.fromkeys(item.pop('ownerProofIds')):
+            if proof_id not in proofs:
+                raise Stop('An owner proof is unknown or belongs to another source.')
+            facts.append(dict(proofs[proof_id]))
+        item['owners'] = list(dict.fromkeys(f['actor'] for f in facts))
+        item['roleFacts'] = [f for f in item['roleFacts'] if f['kind'] != 'owner'] + facts
+    return parsed
 
 
 class CoverageAuditError(Stop):
@@ -582,7 +623,9 @@ COVERAGE_RULES = """독립적인 누락 검토를 수행한다. proposedItems는
 items에 이 스레드의 검토 완료된 업무 전체를 직접 반환한다. 모든 item의 sourceKey는 입력의 유일한 sourceKey와 같다.
 별도 연결표나 행 번호는 만들지 않는다. 3주차·4주차처럼 담당이 다르면 각각의 업무로 반환한다.
 일정 공지로 실제 제작 업무를 대체하지 않는다. 1차·2차 대상과 컷별 분장도 확인하고 2차 미배정은 추정하지 않는다.
-owners의 각 담당자는 roleFacts의 정확한 원문 인용으로 증명한다. 주차별·컷별 분장 문장과 본인의 제작·전달 선언도 직접 근거다. cc·참고만으로 배정하지 않는다.
+담당은 verifiedOwnerProofs 중 해당 업무·주차·산출물에 실제로 해당하는 근거 ID를 ownerProofIds에 선택한다.
+담당자를 직접 쓰거나 담당 인용을 다시 작성하지 않는다. 원문과 대조해 잘못된 과거 담당·다른 산출물의 근거를 선택하지 않는다.
+명시적 근거가 없으면 ownerProofIds=[]로 두고 issue에 담당 확인 필요를 표시한다. roleFacts는 requester/collaborator만 반환한다.
 기존 수동 업무는 유지하며 별개 신규 산출물만 새로 추가한다. 완료·담당·마감의 근거 검증 규칙은 그대로 적용한다.
 반영할 업무가 없으면 items=[]와 구체적인 exclusionReason 및 해당 스레드의 실제 evidence_id 하나를 exclusionEvidenceId에 반환한다.
 작업을 맡거나 제작·전달한 디자이너의 직접 선언이 있으면 업무 없음으로 제외하지 않는다.
@@ -599,6 +642,7 @@ def summarize_batch(sources, active, cfg, period, repair=None, audit_items=None)
     auditing = audit_items is not None
     if auditing:
         data['proposedItems'] = audit_items
+        data['verifiedOwnerProofs'] = owner_proof_catalog(sources, cfg)
     if len(json.dumps(data, ensure_ascii=False)) > 280000:
         raise Stop('Model input exceeds budget; no silent truncation.')
     result = http_json('https://api.openai.com/v1/responses', os.environ['OPENAI_API_KEY'], {
@@ -614,6 +658,7 @@ def summarize_batch(sources, active, cfg, period, repair=None, audit_items=None)
                          if c.get('type') == 'output_text')
         parsed = json.loads(output)
         if auditing:
+            parsed = resolve_owner_proofs(parsed, data['verifiedOwnerProofs'])
             review = {'sourceKey': next(iter(sources)), **parsed}
             return validate_source_reviews({'sourceReviews': [review]}, sources, cfg)
         return parsed['items']
