@@ -5,6 +5,15 @@ import daily_board as daily
 
 
 class DailyTests(unittest.TestCase):
+    def test_readonly_validation_can_repeat_after_scheduled_cutoff(self):
+        now=dt.datetime(2026,11,11,12,10,tzinfo=daily.board.KST)
+        start,end=daily.validation_window(now)
+        self.assertEqual(end,now)
+        self.assertEqual(start,now-dt.timedelta(days=14))
+        with self.assertRaises(daily.board.Stop):
+            daily.window(now.date(),{'meta':{'daily':{'sourceCutoff':'2026-11-11T06:59:59+09:00'}}})
+        self.assertGreater(end,dt.datetime(2026,11,11,7,tzinfo=daily.board.KST))
+
     def test_review_revisits_two_weeks_without_changing_cursor_or_past_cutoff(self):
         start,end=daily.window(dt.date(2026,11,11),{'meta':{'daily':{'sourceCutoff':'2026-11-10T06:59:59+09:00'}}})
         self.assertEqual(start.isoformat(),'2026-11-10T07:00:00+09:00')

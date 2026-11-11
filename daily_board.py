@@ -80,6 +80,12 @@ def review_start(start, end, backfill=False):
     return start if backfill else min(start, end - dt.timedelta(days=14))
 
 
+def validation_window(now):
+    """Read-only validation is repeatable after today's scheduled commit."""
+    end = now.astimezone(board.KST)
+    return end - dt.timedelta(days=14), end
+
+
 def draft(sources, active, cfg, period, start, end):
     repair = None
     for _ in range(3):
@@ -172,7 +178,8 @@ def execute(now=None):
                 raise board.Stop('Resumed historical record readback failed.')
             print('PASS: Daily record saved and verified: ' + date_string + '; rows=' + str(verified['rowCount']), flush=True)
             continue
-        start, end = window(date, snapshot, backfill)
+        start, end = (validation_window(now) if phase == 'validate' and not publish
+                      else window(date, snapshot, backfill))
         active = snapshot['activeTasks']
         user = shared_user or board.Slack(os.environ['SLACK_USER_TOKEN'], 'user')
         identity = user.call('auth.test')
