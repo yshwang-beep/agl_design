@@ -506,6 +506,57 @@ def resize_today_briefing():
     print('Updated existing briefing image to maximum 400 x 225; text and metadata preserved. No new message sent.')
 
 
+
+def revise_samsung_briefing():
+    """Apply the owner's approved copy only to the existing Nov 12 issue."""
+    channel, stamp = 'C0AM4AC7WA3', '1794442297.552329'
+    if os.environ['BRIEFING_CHANNEL_ID'] != channel or os.environ.get('BRIEFING_PUBLISH') == 'true':
+        raise Stop('Existing-copy update destination or mode mismatch.')
+    auth = slack('auth.test', {})
+    if auth.get('team_id') != os.environ['SLACK_TEAM_ID'] or auth.get('user_id') != os.environ['SLACK_BOT_USER_ID']:
+        raise Stop('Slack bot/workspace mismatch.')
+    params = {'channel': channel, 'oldest': stamp, 'latest': stamp,
+              'inclusive': 'true', 'limit': 1, 'include_all_metadata': 'true'}
+    messages = slack('conversations.history', params).get('messages', [])
+    if len(messages) != 1:
+        raise Stop('Original Samsung briefing not uniquely found.')
+    original = messages[0]
+    metadata = original.get('metadata', {})
+    if original.get('user') != auth['user_id'] or original.get('ts') != stamp or metadata.get('event_type') != EVENT_TYPE or metadata.get('event_payload', {}).get('date') != '2026-11-12':
+        raise Stop('Original Samsung briefing identity mismatch.')
+    images = [b for b in original.get('blocks', []) if b.get('type') == 'image']
+    if len(images) != 1:
+        raise Stop('Expected one original image.')
+    title = '[실무·브랜드] 삼성 × POLI.design | 제품 경험을 비주얼로 풀어낸 협업'
+    body = ('*삼성 디자인 · 2026.10.28 · 한국어*\n\n'
+            '제품의 기능과 사용 경험을 *색·질감·움직임*으로 표현한 사례입니다.\n\n'
+            '• *이어폰의 소리* → 소재·질감·동심원 파동\n'
+            '• *로봇청소기의 이동* → 그림을 만드는 선과 흔적\n'
+            '• *아트워크의 표현* → 맞춤 프레임까지 확장\n\n'
+            '*주목할 점*\n제품의 특징을 시각 언어로 바꾸는 방식.\n\n'
+            '*실무 적용*\n다음 키비주얼 회의에서 이렇게 정리해 보세요.\n'
+            '*제품 특징 → 고객이 느끼는 감각 → 시각적 표현*\n'
+            '예: 보습 → 감싸는 느낌 → 부드럽게 감싸는 형태\n\n'
+            '▶ <https://www.design.samsung.com/kr/contents/seouldesignweek2026-artwork|원문과 자세한 내용 보기>')
+    blocks = [
+        {'type': 'section', 'text': {'type': 'mrkdwn', 'text': '<!subteam^S09FW5GBM7G>'}},
+        {'type': 'header', 'text': {'type': 'plain_text', 'text': title}},
+        {'type': 'image', 'image_url': images[0]['image_url'], 'alt_text': images[0]['alt_text']},
+        {'type': 'section', 'text': {'type': 'mrkdwn', 'text': body}},
+    ]
+    if same_payload(original, blocks) and original.get('text') == title:
+        print('Approved Samsung copy already applied; no update needed.')
+        return
+    latest = slack('conversations.history', params).get('messages', [])
+    if len(latest) != 1 or latest[0].get('blocks') != original.get('blocks'):
+        raise Stop('Original message changed during preparation; no update sent.')
+    slack('chat.update', {'channel': channel, 'ts': stamp, 'text': title, 'blocks': blocks}, write=True)
+    updated = slack('conversations.history', params).get('messages', [])
+    if len(updated) != 1 or not same_payload(updated[0], blocks) or updated[0].get('metadata') != metadata or updated[0].get('text') != title:
+        raise Stop('Samsung copy update readback mismatch; inspect existing message.')
+    print('Approved Samsung title and concise copy applied; original image and metadata preserved. Message ID: ' + stamp)
+
+
 def escape(value):
     # Source text cannot introduce Slack mentions or links.
     return html.escape(value, quote=False)
@@ -547,6 +598,9 @@ def same_payload(message, expected):
 
 
 def main():
+    if os.environ.get('BRIEFING_REVISE_SAMSUNG') == 'true':
+        revise_samsung_briefing()
+        return
     if os.environ.get('BRIEFING_RESIZE_TODAY') == 'true':
         resize_today_briefing()
         return
