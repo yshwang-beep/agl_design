@@ -14,6 +14,10 @@ on:
         description: Resize only the existing Nov 11 briefing image; do not publish a new message
         type: boolean
         default: false
+      revise_samsung:
+        description: Apply approved concise copy to the existing Nov 12 Samsung message only
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -44,6 +48,7 @@ jobs:
           BRIEFING_SEARCH_MODEL: ${{ vars.BRIEFING_SEARCH_MODEL || 'gpt-5-mini' }}
           BRIEFING_EXTRA_HOLIDAYS: ${{ vars.BRIEFING_EXTRA_HOLIDAYS || '[]' }}
           BRIEFING_EXCLUDED_URLS: ${{ secrets.BRIEFING_EXCLUDED_URLS || '[]' }}
+          BRIEFING_REVISE_SAMSUNG: ${{ inputs.revise_samsung == true && 'true' || 'false' }}
           BRIEFING_RESIZE_TODAY: ${{ inputs.resize_today == true && 'true' || 'false' }}
           BRIEFING_PUBLISH: ${{ vars.BRIEFING_ENABLED == 'true' && (github.event_name == 'schedule' || inputs.publish == true) && 'true' || 'false' }}
         run: python3 design_briefing.py
