@@ -3,12 +3,14 @@ on:
   schedule:
     - cron: '0 22 * * *'
     - cron: '0 1,5 * * *'
+    - cron: '30 7 * * 5'
+    - cron: '0 8 * * 5'
   workflow_dispatch:
     inputs:
       phase:
         description: Read-only connection check or source validation
         type: choice
-        options: [preflight, validate, backfill]
+        options: [preflight, validate, backfill, friday_preview]
         default: preflight
       backfill_dates:
         description: Explicit dates to reconstruct, comma-separated (requires an exact-run server grant)
@@ -26,7 +28,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   board:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 22 * * *' && vars.BOARD_ENABLED == 'true')
+    if: (github.event_name == 'workflow_dispatch' && inputs.phase != 'friday_preview') || (github.event_name == 'schedule' && github.event.schedule == '0 22 * * *' && vars.BOARD_ENABLED == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 85
     steps:
@@ -63,7 +65,7 @@ jobs:
           PYTHON
 
   leave:
-    if: github.event_name == 'schedule' && vars.BOARD_ENABLED == 'true'
+    if: github.event_name == 'schedule' && (github.event.schedule == '0 22 * * *' || github.event.schedule == '0 1,5 * * *') && vars.BOARD_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -79,3 +81,30 @@ jobs:
           BOARD_CONFIG: ${{ secrets.BOARD_CONFIG }}
           SLACK_USER_TOKEN: ${{ secrets.SLACK_USER_TOKEN }}
         run: python3 leave_sync.py
+
+  friday_report:
+    if: (github.event_name == 'workflow_dispatch' && inputs.phase == 'friday_preview') || (github.event_name == 'schedule' && (github.event.schedule == '30 7 * * 5' || github.event.schedule == '0 8 * * 5') && vars.FRIDAY_REPORTS_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: design-weekly
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Validate dashboard report
+        run: python3 -m unittest test_dashboard_report.py test_weekly_report.py
+      - name: Publish Friday dashboard report or validate without posting
+        env:
+          WORKBOARD_URL: ${{ vars.WORKBOARD_URL }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
+          SLACK_BOT_USER_ID: ${{ vars.SLACK_BOT_USER_ID }}
+          SLACK_TEAM_ID: ${{ vars.SLACK_TEAM_ID }}
+          SLACK_GROUP_MENTION: ${{ vars.SLACK_GROUP_MENTION }}
+          SLACK_WORKSPACE_URL: ${{ vars.SLACK_WORKSPACE_URL }}
+          FRIDAY_REPORTS_ENABLED: ${{ vars.FRIDAY_REPORTS_ENABLED }}
+          REPORT_SCHEDULE: ${{ github.event.schedule || '' }}
+          PUBLISH: ${{ github.event_name == 'schedule' && vars.FRIDAY_REPORTS_ENABLED == 'true' && 'true' || 'false' }}
+        run: python3 dashboard_report.py
