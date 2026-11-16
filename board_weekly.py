@@ -683,9 +683,15 @@ def summarize_batch(sources, active, cfg, period, repair=None, audit_items=None)
     result = http_json('https://api.openai.com/v1/responses', os.environ['OPENAI_API_KEY'], {
         'model': os.environ.get('OPENAI_MODEL', 'gpt-4.1'), 'store': False,
         'instructions': cfg.get('source_policy', '') + '\n' + os.environ.get('REPORT_POLICY', '') + '\n' + BOARD_RULES + ('\n' + COVERAGE_RULES if auditing else ''),
-        'input': json.dumps(data, ensure_ascii=False), 'max_output_tokens': 16000,
+        'input': json.dumps(data, ensure_ascii=False, separators=(',', ':')), 'max_output_tokens': 16000,
         'text': {'format': {'type': 'json_schema', 'name': 'design_board', 'strict': True,
                            'schema': coverage_schema(sources, active, cfg) if auditing else board_schema(sources, active, cfg)}}}, 'OpenAI', retry_read=True)
+    # Counts only: never expose Slack text, prompts, model output or credentials.
+    usage = result.get('usage') or {}
+    counts = {name: usage.get(name, 0) for name in ('input_tokens', 'output_tokens', 'total_tokens')}
+    counts['cached_input_tokens'] = (usage.get('input_tokens_details') or {}).get('cached_tokens', 0)
+    if all(isinstance(value, int) and value >= 0 for value in counts.values()):
+        print('AI usage ' + ('audit' if auditing else 'draft') + ': ' + json.dumps(counts, sort_keys=True), flush=True)
     if result.get('status') != 'completed':
         raise Stop('Board AI response did not complete.')
     try:

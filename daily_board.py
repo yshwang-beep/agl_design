@@ -74,10 +74,10 @@ def ensure_window(now, date):
 
 
 def review_start(start, end, backfill=False):
-    # Reconsider missed deliverables even when their thread has no new reply.
-    # The incremental commit cursor stays unchanged; historical views keep
-    # their original seven-day scope and never see future messages.
-    return start if backfill else min(start, end - dt.timedelta(days=14))
+    # Recover missed deliverables in Monday's full two-week review. Other days
+    # process changes since the last successful cutoff, retaining unchanged tasks
+    # on the server. Historical reconstruction keeps its original seven days.
+    return min(start, end - dt.timedelta(days=14)) if not backfill and end.weekday() == 0 else start
 
 
 def validation_window(now):
@@ -87,13 +87,22 @@ def validation_window(now):
 
 
 def draft(sources, active, cfg, period, start, end):
-    repair = None
+    repair, items, pending_sources = None, [], sources
     for _ in range(3):
-        items = board.summarize(sources, active, cfg, period, repair)
+        replacements = board.summarize(pending_sources, active, cfg, period, repair)
+        if any(item.get('sourceKey') not in pending_sources for item in replacements):
+            raise board.Stop('Repair returned an unrelated source.')
+        items = [item for item in items if item['sourceKey'] not in pending_sources] + replacements
         tasks, failures = board.validate_draft(items, sources, active, cfg, start, end)
         if not failures:
             return tasks, ''
-        repair = {'failures': failures, 'previous_items': items}
+        failed_keys = {failure.get('sourceKey') for failure in failures}
+        if not failed_keys or not failed_keys <= sources.keys():
+            raise board.Stop('Draft failure cannot be isolated to a known source.')
+        pending_sources = {key: source for key, source in sources.items() if key in failed_keys}
+        repair = {'failures': failures,
+                  'previous_items': [item for item in items if item['sourceKey'] in failed_keys]}
+        print('Draft repair limited to ' + str(len(pending_sources)) + '/' + str(len(sources)) + ' sources.', flush=True)
     tasks, review, deferred = board.reviewed_fallback(items, sources, active, cfg, start, end)
     note = ('원문 재확인 필요 ' + str(review) + '건, 신규 반영 보류 ' + str(deferred) + '건입니다.') if review or deferred else ''
     return tasks, note
@@ -200,7 +209,7 @@ def execute(now=None):
             raise board.Stop('Missing GitHub run identity.')
         result = api.call('commit', {'runId': run_id, 'expectedRevision': snapshot['revision'],
                                     'tasks': tasks, 'coverage': coverage, 'sourceStart': start.isoformat(),
-                                    **({'reviewStart': reviewed_from.isoformat()} if not backfill else {}),
+                                    **({'reviewStart': reviewed_from.isoformat()} if not backfill and reviewed_from < start else {}),
                                     'sourceCutoff': (end - dt.timedelta(seconds=1)).isoformat()})
         verified = api.call('status')
         if verified.get('status') != 'committed' or verified.get('revision') != result.get('revision') or verified.get('runId') != result.get('runId'):

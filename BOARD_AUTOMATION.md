@@ -103,3 +103,23 @@ After three unsuccessful draft repairs, valid rows can still be published. A row
 For duplicate deliverables, design-lab threads and their latest replies are primary evidence; design-work messages support them. Conflicting older internal assignments cannot override a lab reassignment. Non-conflicting actual work statements may supplement the lab source. Human reviewed edits remain protected.
 
 The current server snapshot is the baseline for each next period. The model receives the saved link, ownership, issue, next action, decision, due date and note, requester, collaborators and review state. Human-edited rows persist across successive periods even when new evidence is absent; a conflicting AI suggestion is stored separately and never replaces them. Their verification is retained rather than replaced with a stale automatic carry-over warning. Original task lineage and archived prior periods remain intact. Source collection still scans channel-root metadata to find new replies on old threads; this is evidence discovery, not a reset of saved dashboard state or a persistent Slack event checkpoint.
+
+
+## API cost control — 2026-11-16
+
+Daily records still run at 07:00 Asia/Seoul. On Monday, reconsider the full
+previous fourteen days to recover missed deliverables. On other days, summarize
+only sources with messages since the last successful daily cutoff; read full
+thread context for those sources and retain unchanged tasks on the server.
+The cutoff advances only after a successful commit; failures do not drop days.
+Historical reconstruction retains its original seven-day window.
+
+Every selected thread still receives the independent source audit, owner-proof
+checks and evidence validation. If local validation fails, rerun extraction and
+audit only for failed source threads; keep the validated results from the others.
+The three-attempt cap and existing reviewed fallback remain in place.
+
+Model inputs use compact JSON without dropping fields or source text. Actions
+logs record input/output/total/cached token counts per draft or audit request,
+never prompts, source contents, generated rows or credentials. No automatic
+paid validation is added; use offline tests and the preflight phase first.

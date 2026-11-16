@@ -14,13 +14,58 @@ class DailyTests(unittest.TestCase):
             daily.window(now.date(),{'meta':{'daily':{'sourceCutoff':'2026-11-11T06:59:59+09:00'}}})
         self.assertGreater(end,dt.datetime(2026,11,11,7,tzinfo=daily.board.KST))
 
-    def test_review_revisits_two_weeks_without_changing_cursor_or_past_cutoff(self):
+    def test_incremental_days_and_monday_full_review_preserve_cursor_and_backfill(self):
         start,end=daily.window(dt.date(2026,11,11),{'meta':{'daily':{'sourceCutoff':'2026-11-10T06:59:59+09:00'}}})
         self.assertEqual(start.isoformat(),'2026-11-10T07:00:00+09:00')
-        self.assertEqual(daily.review_start(start,end).isoformat(),'2026-10-28T07:00:00+09:00')
+        self.assertEqual(daily.review_start(start,end), start)
+        monday=end+dt.timedelta(days=5)
+        monday_start=monday-dt.timedelta(days=1)
+        self.assertEqual(daily.review_start(monday_start,monday),monday-dt.timedelta(days=14))
+        self.assertEqual(daily.review_start(monday_start,monday,backfill=True),monday_start)
+        for offset in range(1,7):
+            cutoff=monday+dt.timedelta(days=offset)
+            self.assertEqual(daily.review_start(cutoff-dt.timedelta(days=1),cutoff),cutoff-dt.timedelta(days=1))
         self.assertEqual(daily.review_start(start,end,backfill=True),start)
         older=start-dt.timedelta(days=30)
         self.assertEqual(daily.review_start(older,end),older)
+
+    def test_repair_reuses_passed_sources_and_rechecks_the_complete_failed_thread(self):
+        sources={'A': {'messages': ['entire A']}, 'B': {'messages': ['entire B']}}
+        passed={'sourceKey':'A','title':'kept'}
+        failed={'sourceKey':'B','title':'bad'}
+        fixed={'sourceKey':'B','title':'fixed'}
+        errors=[{'sourceKey':'B','item_index':1,'failure':'bad evidence'}]
+        with patch.object(daily.board,'summarize',side_effect=[[passed,failed],[fixed]]) as summarize, patch.object(daily.board,'validate_draft',side_effect=[(['valid A'],errors),(['valid A','valid B'],[])]) as validate:
+            tasks,note=daily.draft(sources,[],{}, {},None,None)
+        self.assertEqual(tasks,['valid A','valid B'])
+        self.assertEqual(note,'')
+        self.assertEqual(summarize.call_count,2)
+        self.assertEqual(summarize.call_args.args[0],{'B':sources['B']})
+        self.assertEqual(summarize.call_args.args[4]['previous_items'],[failed])
+        self.assertEqual(validate.call_args.args[0],[passed,fixed])
+        self.assertEqual(validate.call_args.args[1],sources)
+
+    def test_persistent_failed_source_uses_existing_fallback_after_three_attempts(self):
+        sources={'A':{},'B':{}}
+        passed={'sourceKey':'A','title':'kept'}
+        failed={'sourceKey':'B','title':'bad'}
+        errors=[{'sourceKey':'B','item_index':1,'failure':'bad evidence'}]
+        with patch.object(daily.board,'summarize',side_effect=[[passed,failed],[failed],[failed]]) as summarize, patch.object(daily.board,'validate_draft',return_value=([],errors)), patch.object(daily.board,'reviewed_fallback',return_value=(['safe'],1,0)) as fallback:
+            tasks,note=daily.draft(sources,[],{},{},None,None)
+        self.assertEqual(tasks,['safe'])
+        self.assertEqual(summarize.call_count,3)
+        self.assertTrue(all(list(call.args[0])==['B'] for call in summarize.call_args_list[1:]))
+        self.assertEqual(fallback.call_args.args[0],[passed,failed])
+        self.assertIn('1건',note)
+
+    def test_repair_cannot_introduce_an_unrelated_source(self):
+        with patch.object(daily.board,'summarize',return_value=[{'sourceKey':'unknown'}]), self.assertRaises(daily.board.Stop):
+            daily.draft({'A':{}},[],{},{},None,None)
+
+    def test_no_new_sources_requires_no_ai_requests(self):
+        with patch.object(daily.board,'http_json') as request:
+            self.assertEqual(daily.draft({},[],{'designers':[]},{},None,None),([],''))
+            request.assert_not_called()
 
     def test_shared_historical_reads_filter_future_messages_and_fetch_once(self):
         client=daily.AsOfSlack('synthetic', '200.000000')
