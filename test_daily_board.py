@@ -111,8 +111,8 @@ class DailyTests(unittest.TestCase):
     def test_every_day_window_and_no_late_or_future_write(self):
         for n in range(7):
             date = dt.date(2026, 11, 2) + dt.timedelta(days=n)
-            daily.ensure_window(dt.datetime.combine(date, dt.time(7), daily.board.KST), date)
-            for time in [dt.time(6, 59), dt.time(8, 30)]:
+            [daily.ensure_window(dt.datetime.combine(date, time, daily.board.KST), date) for time in [dt.time(7), dt.time(8, 30), dt.time(10, 35), dt.time(13, 20), dt.time(23, 59)]]
+            for time in [dt.time(6, 59), dt.time(0)]:
                 with self.assertRaises(daily.board.Stop):
                     daily.ensure_window(dt.datetime.combine(date, time, daily.board.KST), date)
 
