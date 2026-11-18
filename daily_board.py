@@ -69,8 +69,8 @@ def window(date, snapshot=None, backfill=False):
 
 
 def ensure_window(now, date):
-    if now.date() != date or not dt.time(7) <= now.time() < dt.time(8, 30):
-        raise board.Stop('Daily collection writes are limited to 07:00–08:30 KST.')
+    if now.date() != date or now.time() < dt.time(7):
+        raise board.Stop('Daily collection writes require the same KST date, at or after 07:00.')
 
 
 def review_start(start, end, backfill=False):
@@ -175,7 +175,7 @@ def execute(now=None):
             ensure_window(now, date)
         existing = api.call('status')
         if publish and existing.get('status') == 'committed':
-            if not backfill and date.weekday() == 0:
+            if not backfill and date.weekday() == 0 and dt.datetime.now(board.KST).time() < dt.time(8, 58):
                 board.schedule_notice(api, bot, cfg, existing, date, dt.datetime.now(board.KST))
             print('PASS: Existing daily record reused: ' + date_string, flush=True)
             continue
@@ -214,7 +214,7 @@ def execute(now=None):
         verified = api.call('status')
         if verified.get('status') != 'committed' or verified.get('revision') != result.get('revision') or verified.get('runId') != result.get('runId'):
             raise board.Stop('Daily record readback failed.')
-        if not backfill and date.weekday() == 0:
+        if not backfill and date.weekday() == 0 and dt.datetime.now(board.KST).time() < dt.time(8, 58):
             board.schedule_notice(api, bot, cfg, verified, date, dt.datetime.now(board.KST), review_note=note)
         print('PASS: Daily record saved and verified: ' + date_string + '; rows=' + str(verified['rowCount']), flush=True)
 
