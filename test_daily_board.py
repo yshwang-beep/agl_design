@@ -5,6 +5,78 @@ import daily_board as daily
 
 
 class DailyTests(unittest.TestCase):
+    def test_model_requests_set_reasoning_only_for_reasoning_models(self):
+        response = {'status': 'completed', 'output': [{'content': [{'type': 'output_text', 'text': '{"items":[]}'}]}]}
+        for model, effort in [('gpt-4.1', None), ('gpt-6.2-sol', 'low'), ('gpt-6.2-astra', 'medium')]:
+            cfg = {'designers': [], '_model': model, '_reasoning': effort}
+            with patch.dict('os.environ', {'OPENAI_API_KEY': 'synthetic'}), \
+                 patch.object(daily.board, 'http_json', return_value=response) as call, \
+                 patch.object(daily.board, 'board_schema', return_value={}):
+                daily.board.summarize_batch({'S': {}}, [], cfg, {})
+            payload = call.call_args.args[2]
+            self.assertEqual(payload['model'], model)
+            if effort:
+                self.assertEqual(payload['reasoning'], {'effort': effort})
+            else:
+                self.assertNotIn('reasoning', payload)
+
+    def test_comparison_is_complete_thread_bounded_and_cost_gate_fails_closed(self):
+        sources = {str(i): {'messages': [{'text': '11/23 추가 공유 예정' if i == 0 else '완료 업무' * (i + 1)}]} for i in range(8)}
+        sources['huge'] = {'messages': [{'text': 'x' * 21000}]}
+        sample = daily.comparison_sample(sources)
+        self.assertEqual(len(sample), 6)
+        self.assertNotIn('huge', sample)
+        for key, value in sample.items():
+            self.assertEqual(value, sources[key])
+        rows = {'gpt-4.1': {'validated': True, 'usage_complete': True, 'estimated_usd': 2, 'uncached_usd': 3},
+                'gpt-6.2-sol': {'validated': True, 'usage_complete': True, 'estimated_usd': 1, 'uncached_usd': 2}}
+        quality = {'gpt-6.2-sol': {'omitted_tasks': 0}}
+        self.assertTrue(daily.comparison_gate(rows, quality, False, 6))
+        self.assertFalse(daily.comparison_gate(rows, quality, True, 6))
+        self.assertFalse(daily.comparison_gate(rows, quality, False, 5))
+        self.assertFalse(daily.comparison_gate(rows, {'gpt-6.2-sol': {'omitted_tasks': 1}}, False, 6))
+        rows['gpt-6.2-sol']['uncached_usd'] = 4
+        self.assertFalse(daily.comparison_gate(rows, quality, False, 6))
+        self.assertEqual(daily.usage_cost([{'model': 'gpt-6.2-sol', 'input_tokens': 1000000,
+                         'output_tokens': 1000000, 'cached_input_tokens': 500000}]), 11.05)
+
+    def test_monday_astra_only_failed_checks_and_never_comparison(self):
+        from unittest.mock import Mock
+        for cfg, repair, expected in [({}, {'failures': [1]}, None),
+                ({'_monday_review': True}, None, None),
+                ({'_monday_review': True}, {'failures': [1]}, 'gpt-6.2-astra'),
+                ({'_monday_review': True, '_comparison': True}, {'failures': [1]}, None)]:
+            with patch.object(daily.board, 'summarize_batch', return_value=[]) as call:
+                daily.board.audit_with_repair({}, [], cfg, {}, repair, [])
+                actual = call.call_args.args[2]
+                self.assertEqual(actual.get('_model'), expected)
+                if expected:
+                    self.assertEqual(actual['_reasoning'], 'medium')
+        error = daily.board.CoverageAuditError([{'failure': 'test'}], {'sourceReviews': []})
+        with patch.object(daily.board, 'summarize_batch', side_effect=[error, []]) as call:
+            daily.board.audit_with_repair({}, [], {'_monday_review': True}, {}, None, [])
+            self.assertEqual(call.call_args.args[2]['_model'], 'gpt-6.2-astra')
+
+    def test_comparison_never_writes_even_with_publish_enabled(self):
+        from unittest.mock import MagicMock
+        now = dt.datetime(2026, 11, 23, 7, tzinfo=daily.board.KST)
+        cfg = {'team_id': 'T', 'bot_user_id': 'B', 'designers': []}
+        api = MagicMock(); api.call.side_effect = [{}, {'activeTasks': []}]
+        bot = MagicMock(); bot.call.return_value = {'team_id': 'T', 'user_id': 'B'}
+        user = MagicMock(); user.call.return_value = {'team_id': 'T'}
+        with patch.dict('os.environ', {'BOARD_PHASE': 'compare', 'BOARD_ENABLED': 'true', 'PUBLISH': 'true',
+                'GITHUB_EVENT_NAME': 'schedule', 'SLACK_BOT_TOKEN': 'x', 'SLACK_USER_TOKEN': 'x', 'WORKBOARD_URL': 'x'}), \
+             patch.object(daily.board, 'config_from_env', return_value=cfg), \
+             patch.object(daily, 'DailyAPI', return_value=api) as factory, \
+             patch.object(daily.board, 'Slack', side_effect=[bot, user]), \
+             patch.object(daily.board, 'collect_sources', return_value=({}, {})), \
+             patch.object(daily, 'compare_models') as compare:
+            daily.execute(now)
+        self.assertFalse(factory.call_args.args[2])
+        self.assertEqual([c.args[0] for c in api.call.call_args_list], ['status', 'snapshot'])
+        compare.assert_called_once()
+
+
     def test_receipts_reuse_only_identical_sources_and_committed_baselines(self):
         import copy
         key='CTEST:1795000000.000000'

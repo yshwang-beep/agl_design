@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from weekly_report import Stop, explicit_completion, weekly_completion
 
 KST = ZoneInfo('Asia/Seoul')
+AI_USAGE = []  # Numeric billing metadata only; never prompts or source text.
 STATUSES = ['진행 중', '진행 예정', '방향 검토', '승인 대기', '자료 대기', '검토 대기',
             '일정 조율', '일정 지연', '보류', '완료', '확인 필요']
 SENSITIVE = re.compile(r'주민등록|주민번호|연봉|급여|인사평가|지원자|채용평가|출퇴근|휴가|병가|'
@@ -590,7 +591,12 @@ class CoverageAuditError(Stop):
 def audit_with_repair(sources, active, cfg, period, repair, proposed):
     for attempt in range(3):
         try:
-            return summarize_batch(sources, active, cfg, period, repair, audit_items=proposed)
+            # Only an explicit failed check can escalate on the scheduled Monday run.
+            review_cfg = cfg
+            if (repair and repair.get('failures') and cfg.get('_monday_review')
+                    and not cfg.get('_comparison')):
+                review_cfg = dict(cfg, _model='gpt-6.2-astra', _reasoning='medium')
+            return summarize_batch(sources, active, review_cfg, period, repair, audit_items=proposed)
         except CoverageAuditError as error:
             if attempt == 2:
                 raise
@@ -710,19 +716,25 @@ def summarize_batch(sources, active, cfg, period, repair=None, audit_items=None)
         data['requiredWeeklyAssignments'] = required_week_assignments(next(iter(sources.values())), cfg)
     if len(json.dumps(data, ensure_ascii=False)) > 280000:
         raise Stop('Model input exceeds budget; no silent truncation.')
-    result = http_json('https://api.openai.com/v1/responses', os.environ['OPENAI_API_KEY'], {
-        'model': os.environ.get('OPENAI_MODEL', 'gpt-4.1'), 'store': False,
+    model = cfg.get('_model') or os.environ.get('OPENAI_MODEL', 'gpt-4.1')
+    effort = cfg.get('_reasoning') or os.environ.get('OPENAI_REASONING_EFFORT', 'low')
+    payload = {
+        'model': model, 'store': False,
         'instructions': cfg.get('source_policy', '') + '\n' + os.environ.get('REPORT_POLICY', '') + '\n' + BOARD_RULES + ('\n' + COVERAGE_RULES if auditing else ''),
         'input': json.dumps(data, ensure_ascii=False, separators=(',', ':')), 'max_output_tokens': 16000,
         'text': {'format': {'type': 'json_schema', 'name': 'design_board', 'strict': True,
-                           'schema': coverage_schema(sources, active, cfg) if auditing else board_schema(sources, active, cfg)}}}, 'OpenAI', retry_read=True)
+                           'schema': coverage_schema(sources, active, cfg) if auditing else board_schema(sources, active, cfg)}}}
+    if model.startswith('gpt-6.'):
+        payload['reasoning'] = {'effort': effort}
+    result = http_json('https://api.openai.com/v1/responses', os.environ['OPENAI_API_KEY'], payload, 'OpenAI', retry_read=True)
     # Counts only: never expose Slack text, prompts, model output or credentials.
     usage = result.get('usage') or {}
     counts = {name: usage.get(name, 0) for name in ('input_tokens', 'output_tokens', 'total_tokens')}
     counts['cached_input_tokens'] = (usage.get('input_tokens_details') or {}).get('cached_tokens', 0)
     if all(isinstance(value, int) and value >= 0 for value in counts.values()):
         print('AI usage ' + ('audit' if auditing else 'draft') + ': ' + json.dumps(counts, sort_keys=True), flush=True)
-        print('AI model: ' + os.environ.get('OPENAI_MODEL', 'gpt-4.1') + '; reasoning effort: not set.', flush=True)
+        AI_USAGE.append(dict(counts, model=model))
+        print('AI model: ' + model + '; reasoning effort: ' + (effort if model.startswith('gpt-6.') else 'not set') + '.', flush=True)
     if result.get('status') != 'completed':
         raise Stop('Board AI response did not complete.')
     try:
