@@ -5,6 +5,8 @@ import os
 import sys
 import time
 import urllib.parse
+import urllib.error
+import re
 import urllib.request
 import design_briefing as b
 
@@ -18,8 +20,15 @@ def queue_api(path, payload):
         token = json.load(res)['value']
     req = urllib.request.Request(BASE + path, data=json.dumps(payload, ensure_ascii=False).encode(),
                                 headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
-    with urllib.request.urlopen(req, timeout=60) as res:
-        return json.load(res)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as res:
+            return json.load(res)
+    except urllib.error.HTTPError as e:
+        try: code=json.loads(e.read(4096)).get('error','unknown')
+        except Exception: code='unknown'
+        safe=code if isinstance(code,str) and re.fullmatch(r'[a-z0-9_]{1,80}',code) else 'unknown'
+        print('Queue API failure:',path,e.code,safe,flush=True)
+        raise
 
 def targets(now):
     """Prepare at most the next issue, up to 72h ahead. Do not shift holiday posts."""
