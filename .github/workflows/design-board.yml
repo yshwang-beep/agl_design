@@ -8,7 +8,7 @@ on:
       phase:
         description: Read-only connection check or source validation
         type: choice
-        options: [preflight, validate, backfill]
+        options: [preflight, validate, backfill, compare]
         default: preflight
       backfill_dates:
         description: Explicit dates to reconstruct, comma-separated (requires an exact-run server grant)
@@ -49,6 +49,7 @@ jobs:
           SLACK_GROUP_MENTION: '<!subteam^S09FW5GBM7G>'
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4.1' }}
+          OPENAI_REASONING_EFFORT: ${{ vars.OPENAI_REASONING_EFFORT || 'low' }}
           REPORT_POLICY: ${{ secrets.REPORT_POLICY }}
         run: |
           python3 - <<'PYTHON'
