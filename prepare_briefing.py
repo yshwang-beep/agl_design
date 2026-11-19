@@ -61,8 +61,8 @@ def verified_items(day, category, prior, excluded):
                 if len({i['source_url'] for i in checked})!=len(checked):
                     raise b.Stop('Duplicate event sources.')
                 return kind,checked
-            except (b.Stop,ValueError):
-                print('Candidate validation failed; trying another original source.')
+            except (b.Stop,ValueError) as e:
+                print('Candidate validation failed:', str(e) if isinstance(e,b.Stop) else 'Invalid date or field',flush=True)
                 for item in draft['items']:
                     try: excluded.add(b.canonical(item['source_url']))
                     except (b.Stop,ValueError,KeyError): pass
@@ -97,6 +97,15 @@ def main():
         auth=b.slack('auth.test',{})
         if auth.get('team_id')!=os.environ['SLACK_TEAM_ID'] or auth.get('user_id')!=os.environ['SLACK_BOT_USER_ID']:
             raise b.Stop('Slack identity mismatch.')
+        if test:
+            message={'channel':channel,'text':'[발송 검증] 월·수·금 오전 9시 5분 자동 발송 기능 확인',
+                     'blocks':[{'type':'header','text':{'type':'plain_text','text':'자동 발송 기능 확인'}},
+                               {'type':'section','text':{'type':'mrkdwn','text':'월·수·금 오전 9시 5분 브리핑의 예약 발송·실패 후 재시도·중복 방지를 확인하는 테스트입니다.'}}],
+                     'metadata':{'event_type':b.EVENT_TYPE,'event_payload':{'date':day.isoformat(),'category':'practice','test':True}}}
+            result=queue_api('/queue',{'date':day.isoformat(),'test':True,'token':os.environ['SLACK_BOT_TOKEN'],'message':message})
+            print('Test queued:',json.dumps(result),flush=True)
+            verify_test(day)
+            continue
         rows=b.history(channel,now)
         prior=b.receipts(rows,auth['user_id'])
         excluded={b.canonical(u) for p in prior for u in p.get('source_urls',[])}
@@ -121,5 +130,5 @@ if __name__=='__main__':
     try: main()
     except Exception as e:
         # urllib exceptions can contain credential-bearing request details. Only type is public.
-        print('Preparation failed:',type(e).__name__,file=sys.stderr)
+        print('Preparation failed:',str(e) if isinstance(e,b.Stop) else type(e).__name__,file=sys.stderr)
         raise SystemExit(1)
