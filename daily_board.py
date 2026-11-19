@@ -5,6 +5,9 @@ import re
 import sys
 import time
 import copy
+import hashlib
+import json
+from pathlib import Path
 
 import board_weekly as board
 
@@ -47,6 +50,7 @@ class DailyAPI(board.BoardAPI):
     def call(self, operation, data=None):
         names = {'snapshot': 'snapshot', 'status': 'daily-status',
                  'baseline': 'daily-baseline', 'capabilities': 'daily-capabilities', 'commit': 'daily-backfill' if self.backfill else 'daily-commit',
+                 'analysis-receipts': 'analysis-receipts',
                  'notice-intent': 'daily-notice-intent', 'notice-result': 'daily-notice-result'}
         if operation not in names:
             raise board.Stop('Unknown daily operation.')
@@ -84,6 +88,67 @@ def validation_window(now):
     """Read-only validation is repeatable after today's scheduled commit."""
     end = now.astimezone(board.KST)
     return end - dt.timedelta(days=14), end
+
+
+# Only hashes are persisted in the private workboard. Never cache Slack bodies or
+# model drafts in public GitHub artifacts. Reuse requires a committed, validated
+# result and an unchanged full source, task baseline, model and policy.
+def digest(value):
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                    separators=(',', ':')).encode()).hexdigest()
+
+
+def analysis_signature(source, cfg):
+    messages = [{k: m.get(k) for k in ('ts', 'user', 'text')} for m in source['messages']]
+    return digest({'source': {k: v for k, v in source.items() if k not in ('messages', 'current_ids')},
+                   'messages': messages, 'cfg': cfg,
+                   'model': os.environ.get('OPENAI_MODEL', 'gpt-4.1'),
+                   'policy': os.environ.get('REPORT_POLICY', ''), 'rules': board.BOARD_RULES,
+                   'code': hashlib.sha256(Path(board.__file__).read_bytes()).hexdigest(),
+                   'cacheVersion': 1})
+
+
+def source_baseline(key, source, active):
+    rows = board.batch_active({key: source}, active)
+    # Hash private values without emitting them or applying prompt redaction.
+    volatile = {'version', 'automationRunId', 'automationEvidence', 'aiSuggestion'}
+    return digest(sorted([{k: v for k, v in t.items() if k not in volatile} for t in rows], key=lambda t: t['id']))
+
+
+def uncached_sources(sources, active, cfg, receipts, end):
+    pending, reused = {}, 0
+    for key, source in sources.items():
+        receipt = receipts.get(digest(key), {})
+        try:
+            checked = dt.datetime.fromisoformat(receipt['cutoff'])
+            valid = (dt.timedelta(0) <= end - checked < dt.timedelta(days=7)
+                     and receipt['source'] == analysis_signature(source, cfg)
+                     and receipt['baseline'] == source_baseline(key, source, active))
+        except (KeyError, TypeError, ValueError):
+            valid = False
+        if valid:
+            reused += 1
+        else:
+            pending[key] = source
+    print('AI source reuse: ' + str(reused) + '; analysis required: ' + str(len(pending)) + '.', flush=True)
+    return pending
+
+
+def save_analysis_receipts(api, sources, cfg, end, revision):
+    # Read back committed output before associating it with the source hash.
+    # A concurrent edit or failed receipt write only loses savings, never work.
+    try:
+        saved = api.call('snapshot')
+        if saved['revision'] != revision:
+            print('Analysis receipts skipped after concurrent board change.', flush=True)
+            return
+        receipts = {digest(key): {'source': analysis_signature(source, cfg),
+                    'baseline': source_baseline(key, source, saved['activeTasks']),
+                    'cutoff': end.isoformat()} for key, source in sources.items()}
+        api.call('analysis-receipts', {'runId': os.environ['GITHUB_RUN_ID'],
+                 'expectedRevision': revision, 'receipts': receipts})
+    except board.Stop:
+        print('Analysis receipts unavailable; next collection will recheck sources.', flush=True)
 
 
 def draft(sources, active, cfg, period, start, end):
@@ -197,7 +262,9 @@ def execute(now=None):
         reviewed_from = review_start(start, end, backfill)
         sources, coverage = board.collect_sources(user, cfg, snapshot, reviewed_from, end)
         period = {'start': reviewed_from.date().isoformat(), 'end': end.date().isoformat()}
-        tasks, note = draft(sources, active, cfg, period, reviewed_from, end)
+        analyzed = (uncached_sources(sources, active, cfg, snapshot.get('analysisReceipts', {}), end)
+                    if publish and not backfill else sources)
+        tasks, note = draft(analyzed, active, cfg, period, reviewed_from, end)
         tasks = collapse_daily_tasks(tasks)
         if not publish:
             print('PASS: Daily draft validated without writes: ' + date_string + '; tasks=' + str(len(tasks)), flush=True)
@@ -214,6 +281,8 @@ def execute(now=None):
         verified = api.call('status')
         if verified.get('status') != 'committed' or verified.get('revision') != result.get('revision') or verified.get('runId') != result.get('runId'):
             raise board.Stop('Daily record readback failed.')
+        if not backfill and not note and analyzed:
+            save_analysis_receipts(api, analyzed, cfg, end, result['revision'])
         if not backfill and date.weekday() == 0 and dt.datetime.now(board.KST).time() < dt.time(8, 58):
             board.schedule_notice(api, bot, cfg, verified, date, dt.datetime.now(board.KST), review_note=note)
         print('PASS: Daily record saved and verified: ' + date_string + '; rows=' + str(verified['rowCount']), flush=True)

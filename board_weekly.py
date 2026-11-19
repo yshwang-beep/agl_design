@@ -451,7 +451,13 @@ def source_batches(sources, active, cfg, period, repair=None, limit=200000):
 
 def summarize(sources, active, cfg, period, repair=None):
     proposed = []
-    batches = source_batches(sources, active, cfg, period, repair)
+    # A repair already has a draft. Send it directly to the full-source audit
+    # instead of paying for another draft plus the same audit.
+    if repair and 'previous_items' in repair:
+        proposed = [item for item in repair['previous_items'] if item.get('sourceKey') in sources]
+        batches = []
+    else:
+        batches = source_batches(sources, active, cfg, period, repair)
     for n, batch in enumerate(batches, 1):
         proposed.extend(summarize_batch(batch, batch_active(batch, active), cfg, period, batch_repair(batch, repair)))
         print('Draft batch complete: ' + str(n) + '/' + str(len(batches)) + '.', flush=True)
@@ -595,7 +601,7 @@ def audit_with_repair(sources, active, cfg, period, repair, proposed):
             print('Source coverage repair required: ' + str(len(error.failures)) + ' check(s).', flush=True)
 
 
-def validate_source_reviews(result, sources, cfg=None):
+def validate_source_reviews(result, sources, cfg=None, period=None):
     """Require each source once and ground nested tasks in that exact thread."""
     seen, items, failures = set(), [], []
     directory = (cfg or {}).get('designers', []) + (cfg or {}).get('collaborators', [])
@@ -635,6 +641,29 @@ def validate_source_reviews(result, sources, cfg=None):
                         for f in item['roleFacts'])):
                     fail(key, 'An owner requires an exact, direct assignment or own-work quotation.')
             items.append(item)
+        # A dated future commitment must not disappear behind a completed PDF.
+        for message in source['messages']:
+            if message['evidence_id'] not in source.get('current_ids', []):
+                continue
+            for match in re.finditer(r'(\d{1,2})/(\d{1,2})[^\n.!?]{0,80}(?:공유|전달|테스트)[^\n.!?]{0,30}(?:예정|드리겠|하겠)', message.get('text', '')):
+                month, day = map(int, match.group(1, 2))
+                if not (1 <= month <= 12 and 1 <= day <= 31):
+                    continue
+                if period and period.get('end'):
+                    reference = dt.date.fromisoformat(period['end'])
+                    try:
+                        if dt.date(reference.year, month, day) < reference:
+                            continue
+                    except ValueError:
+                        continue
+                date_pattern = rf'(?<!\d)(?:\d{{4}}-)?0?{month}(?:/|-|\.)0?{day}(?!\d)'
+                def represents(item):
+                    text = ' '.join([item.get('due', ''), item.get('dueNote', ''), item.get('title', '')]
+                                    + item.get('issue', []) + item.get('next', []))
+                    return message['evidence_id'] in item['evidenceIds'] and re.search(date_pattern, text)
+                if not any(represents(item) for item in rows):
+                    fail(key, 'A dated follow-up commitment is missing; preserve its action and date.',
+                         requiredFollowup={'sourceId': message['evidence_id'], 'month': month, 'day': day})
         # Explicit week-by-week assignments must survive as separate rows.
         for assignment in required_week_assignments(source, cfg or {}):
             week, actor = assignment['week'], assignment['actor']
@@ -650,6 +679,7 @@ def validate_source_reviews(result, sources, cfg=None):
 
 COVERAGE_RULES = """독립적인 누락 검토를 수행한다. proposedItems는 정답이 아닌 초안이다.
 원문 본문부터 마지막 댓글까지 다시 읽고, 주차·차수·산출물별로 누락 및 잘못된 담당을 수정한다.
+완료된 공유·전달 사실과 날짜가 명시된 후속 테스트·추가 공유 약속을 모두 보존한다. 별도 산출물·일정이면 같은 프로젝트의 후속 업무로 분리하며, 다음 주 일정이라는 이유로 제외하지 않는다. repair.requiredFollowup의 날짜와 행동을 반드시 복구한다.
 이번 요청에는 하나의 완전한 스레드만 있다. 응답에는 items, exclusionReason, exclusionEvidenceId만 반환한다.
 items에 이 스레드의 검토 완료된 업무 전체를 직접 반환한다. 모든 item의 sourceKey는 입력의 유일한 sourceKey와 같다.
 별도 연결표나 행 번호는 만들지 않는다. 3주차·4주차처럼 담당이 다르면 각각의 업무로 반환한다.
@@ -692,6 +722,7 @@ def summarize_batch(sources, active, cfg, period, repair=None, audit_items=None)
     counts['cached_input_tokens'] = (usage.get('input_tokens_details') or {}).get('cached_tokens', 0)
     if all(isinstance(value, int) and value >= 0 for value in counts.values()):
         print('AI usage ' + ('audit' if auditing else 'draft') + ': ' + json.dumps(counts, sort_keys=True), flush=True)
+        print('AI model: ' + os.environ.get('OPENAI_MODEL', 'gpt-4.1') + '; reasoning effort: not set.', flush=True)
     if result.get('status') != 'completed':
         raise Stop('Board AI response did not complete.')
     try:
@@ -701,7 +732,7 @@ def summarize_batch(sources, active, cfg, period, repair=None, audit_items=None)
         if auditing:
             parsed = resolve_owner_proofs(parsed, data['verifiedOwnerProofs'])
             review = {'sourceKey': next(iter(sources)), **parsed}
-            return validate_source_reviews({'sourceReviews': [review]}, sources, cfg)
+            return validate_source_reviews({'sourceReviews': [review]}, sources, cfg, period)
         return parsed['items']
     except (ValueError, KeyError, TypeError):
         raise Stop('Board AI output is invalid.') from None

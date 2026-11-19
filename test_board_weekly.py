@@ -15,6 +15,28 @@ def stamp(day, hour=12):
 
 
 class BoardTests(unittest.TestCase):
+    def test_repair_skips_redrafting_but_keeps_complete_independent_audit(self):
+        repair={'failures':[{'sourceKey':self.key,'failure':'invalid due'}],'previous_items':[self.item]}
+        with patch.object(board,'summarize_batch') as drafting,patch.object(board,'audit_with_repair',return_value=[self.item]) as audit:
+            self.assertEqual(board.summarize(self.sources,[],self.cfg,self.period,repair),[self.item])
+        drafting.assert_not_called()
+        self.assertEqual(audit.call_args.args[0],self.sources)
+        self.assertEqual(audit.call_args.args[-1],[self.item])
+
+    def test_pdf_completion_cannot_hide_dated_followup(self):
+        import copy
+        source=copy.deepcopy(self.sources)
+        source[self.key]['messages'].append({'evidence_id':'FOLLOW','ts':stamp(22),'user':'UTEST1',
+            'text':'현재는 PDF로 먼저 공유드립니다. 관련 내용은 *11/23(월)에 추가로 공유*드리겠습니다.'})
+        source[self.key]['current_ids'].append('FOLLOW')
+        item=copy.deepcopy(self.item)
+        review={'sourceReviews':[{'sourceKey':self.key,'items':[item],'exclusionReason':'','exclusionEvidenceId':''}]}
+        with self.assertRaises(board.CoverageAuditError) as error:
+            board.validate_source_reviews(review,source,self.cfg)
+        self.assertTrue(any('requiredFollowup' in f for f in error.exception.failures))
+        item['due']='2026-11-23';item['next']=['11/23 적용 방식 추가 공유'];item['evidenceIds'].append('FOLLOW')
+        self.assertEqual(board.validate_source_reviews(review,source,self.cfg),[item])
+
     def test_audit_repairs_all_dispositions_without_duplicating_private_drafts(self):
         import copy
         second=copy.deepcopy(self.sources[self.key]);second_key=self.key+'-second'

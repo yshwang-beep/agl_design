@@ -5,6 +5,44 @@ import daily_board as daily
 
 
 class DailyTests(unittest.TestCase):
+    def test_receipts_reuse_only_identical_sources_and_committed_baselines(self):
+        import copy
+        key='CTEST:1795000000.000000'
+        source={'channel_id':'CTEST','thread_ts':'1795000000.000000',
+                'messages':[{'evidence_id':'E1','ts':'1795000000.000000','user':'U1','text':'원문'}], 'current_ids':['E1']}
+        cfg={'designers':[]}; end=dt.datetime(2026,11,19,7,tzinfo=daily.board.KST)
+        active=[{'id':'T1','title':'업무','link':'https://example.slack.com/archives/CTEST/p1795000000000000','issue':'원문 유지'}]
+        receipts={daily.digest(key):{'source':daily.analysis_signature(source,cfg),
+            'baseline':daily.source_baseline(key,source,active),'cutoff':(end-dt.timedelta(days=1)).isoformat()}}
+        self.assertEqual(daily.uncached_sources({key:source},active,cfg,receipts,end),{})
+        for changed in ['new_reply','edited_text','deleted_message']:
+            new=copy.deepcopy(source)
+            if changed=='new_reply': new['messages'].append({'evidence_id':'E2','ts':'1795000001.000000','user':'U1','text':'11/23 추가 공유'})
+            elif changed=='edited_text': new['messages'][0]['text']='수정된 내용'
+            else: new['messages']=[]
+            self.assertEqual(list(daily.uncached_sources({key:new},active,cfg,receipts,end)),[key])
+        for altered in [[{**active[0],'issue':'수동 변경'}],[]]:
+            self.assertEqual(list(daily.uncached_sources({key:source},altered,cfg,receipts,end)),[key])
+        for age in [7,-1]:
+            receipt=copy.deepcopy(receipts);receipt[daily.digest(key)]['cutoff']=(end-dt.timedelta(days=age)).isoformat()
+            self.assertTrue(daily.uncached_sources({key:source},active,cfg,receipt,end))
+        with patch.dict('os.environ',{'OPENAI_MODEL':'different-model'}):
+            self.assertTrue(daily.uncached_sources({key:source},active,cfg,receipts,end))
+        self.assertTrue(daily.uncached_sources({key:source},active,{'designers':[],'source_policy':'new'},receipts,end))
+
+    def test_receipts_do_not_reuse_sensitive_edited_task_or_changed_evidence(self):
+        # Cache identity must still notice private manual values; only their hash is stored.
+        key='CTEST:1795000000.000000'; source={'channel_id':'CTEST','thread_ts':'1795000000.000000','messages':[]}
+        active=[{'id':'T1','link':'https://example.slack.com/archives/CTEST/p1795000000000000','issue':'휴가 기존값'}]
+        self.assertNotEqual(daily.source_baseline(key,source,active),daily.source_baseline(key,source,[{**active[0],'issue':'휴가 변경값'}]))
+
+    def test_cache_write_waits_for_committed_revision_and_contains_only_hashes(self):
+        from unittest.mock import MagicMock
+        api=MagicMock();api.call.return_value={'revision':'changed','activeTasks':[]}
+        end=dt.datetime(2026,11,19,7,tzinfo=daily.board.KST)
+        daily.save_analysis_receipts(api,{}, {},end,'expected')
+        self.assertEqual(api.call.call_count,1)
+
     def test_readonly_validation_can_repeat_after_scheduled_cutoff(self):
         now=dt.datetime(2026,11,11,12,10,tzinfo=daily.board.KST)
         start,end=daily.validation_window(now)
