@@ -8,7 +8,7 @@ class PreparationTests(unittest.TestCase):
         for now,expected in [('2026-11-19T12:00:00+09:00','2026-11-20'),('2026-11-20T09:10:00+09:00','2026-11-20'),('2026-11-20T10:05:00+09:00','2026-11-23'),('2026-11-22T20:00:00+09:00','2026-11-23')]:
             self.assertEqual(p.targets(dt.datetime.fromisoformat(now))[0].isoformat(),expected)
     def test_friday_fallback_to_verified_inspiration(self):
-        date=dt.date(2026,11,20)
+        date=dt.date(2026,11,27)
         empty={'temporary_holiday':False,'items':[]}
         draft={'temporary_holiday':False,'items':[{'source_url':'https://example.com/a'}]}
         with patch.object(b,'research',return_value=('research',{'https://example.com/a'})) as research,patch.object(b,'structure',side_effect=[empty,empty,empty,draft]),patch.object(b,'verify_item',return_value={'source_url':'https://example.com/a'}):
