@@ -3,6 +3,7 @@ import datetime as dt
 import json
 import os
 import sys
+import time
 import urllib.parse
 import urllib.request
 import design_briefing as b
@@ -58,6 +59,15 @@ def verified_items(day, category, prior, excluded):
                     except (b.Stop,ValueError,KeyError): pass
     raise b.Stop('No verified issue after bounded research; preparation can be retried.')
 
+def verify_test(day):
+    for _ in range(20):
+        status=queue_api('/status', {'date':day.isoformat(),'test':True})
+        print('Delivery verification:', json.dumps(status), flush=True)
+        if status['status']=='delivered': return
+        if status['status'] in ('expired','content_mismatch'): raise b.Stop('Test delivery failed.')
+        time.sleep(30)
+    raise b.Stop('Test delivery verification timed out.')
+
 def main():
     now=dt.datetime.now(b.KST)
     test=os.environ.get('BRIEFING_TEST')=='true'
@@ -65,7 +75,8 @@ def main():
     for day in days:
         status=queue_api('/status',{'date':day.isoformat(),'test':test})
         if status['status'] in ('queued','delivered','skipped','sending','uncertain','retry','content_mismatch','expired'):
-            print('Existing issue:',day.isoformat(),status['status'])
+            print('Existing issue:',day.isoformat(),json.dumps(status),flush=True)
+            if test: verify_test(day)
             continue
         calendar=b.holiday_calendar(day.year,json.loads(os.environ.get('BRIEFING_EXTRA_HOLIDAYS','[]')))
         category='practice' if test else b.category_for(day,calendar)
@@ -94,7 +105,8 @@ def main():
                      'date':day.isoformat(),'category':kind,'region':items[0]['region'],
                      'source_urls':[i['source_url'] for i in items], 'test':test}}}
         result=queue_api('/queue',{'date':day.isoformat(),'test':test,'token':os.environ['SLACK_BOT_TOKEN'],'message':message})
-        print('Verified issue queued:',day.isoformat(),result['status'])
+        print('Verified issue queued:',day.isoformat(),json.dumps(result),flush=True)
+        if test: verify_test(day)
 
 if __name__=='__main__':
     try: main()
