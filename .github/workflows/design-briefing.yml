@@ -1,42 +1,35 @@
 name: Daily design briefing
 on:
   schedule:
-    # Prepare early; the runner waits until 09:00 Asia/Seoul before publishing.
-    - cron: '30 23 * * 0-4'
-    - cron: '0 0 * * 1-5'
+    # Prepare ahead, with repeated independent recovery attempts. UTC times.
+    # Delivery is handled by Cloudflare at 09:05 KST, not by this scheduler.
+    - cron: '17 3,9,15,21 * * *'
   workflow_dispatch:
     inputs:
-      publish:
-        description: Publish once only inside today's Korean business-day 09:00-11:00 window
-        type: boolean
-        default: false
-      resize_today:
-        description: Resize only the existing Nov 11 briefing image; do not publish a new message
-        type: boolean
-        default: false
-      revise_samsung:
-        description: Apply approved concise copy to the existing Nov 12 Samsung message only
+      test_delivery:
+        description: Send one explicitly marked live verification issue (requires temporary server-side test grant)
         type: boolean
         default: false
 permissions:
   contents: read
+  id-token: write
 concurrency:
   group: design-public-briefing
   cancel-in-progress: false
 jobs:
   briefing:
-    if: github.event_name == 'workflow_dispatch' || vars.BRIEFING_ENABLED == 'true'
+    if: vars.BRIEFING_ENABLED == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 80
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
       - name: Install Korean holiday calendar
         run: python3 -m pip install 'holidays==0.83'
-      - name: Validate holiday rules, monthly routing and message format
+      - name: Validate weekday routing and existing source checks
         run: python3 design_briefing.py --self-test
-      - name: Research, verify and deliver one briefing
+      - name: Prepare verified issue and enqueue for 09:05 KST
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -48,7 +41,12 @@ jobs:
           BRIEFING_SEARCH_MODEL: ${{ vars.BRIEFING_SEARCH_MODEL || 'gpt-5-mini' }}
           BRIEFING_EXTRA_HOLIDAYS: ${{ vars.BRIEFING_EXTRA_HOLIDAYS || '[]' }}
           BRIEFING_EXCLUDED_URLS: ${{ secrets.BRIEFING_EXCLUDED_URLS || '[]' }}
-          BRIEFING_REVISE_SAMSUNG: ${{ inputs.revise_samsung == true && 'true' || 'false' }}
-          BRIEFING_RESIZE_TODAY: ${{ inputs.resize_today == true && 'true' || 'false' }}
-          BRIEFING_PUBLISH: ${{ vars.BRIEFING_ENABLED == 'true' && (github.event_name == 'schedule' || inputs.publish == true) && 'true' || 'false' }}
-        run: python3 design_briefing.py
+          BRIEFING_TEST: ${{ inputs.test_delivery == true && 'true' || 'false' }}
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if python3 prepare_briefing.py; then exit 0; fi
+            if [ "$attempt" -lt 3 ]; then sleep 60; fi
+          done
+          echo '::error::No verified briefing queued after three attempts; next scheduled run retries.'
+          exit 1
