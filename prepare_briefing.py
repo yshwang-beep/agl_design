@@ -63,6 +63,32 @@ def verify_candidate(item, day, kind, allowed, excluded):
         return b.verify_item(rebuilt,day,kind,allowed,excluded)
 
 def verified_items(day, category, prior, excluded):
+    # First Friday issue researched against official sources during rollout.
+    # The dated selection expires automatically; future issues use live research.
+    if day==dt.date(2026,11,20) and category=='events':
+        source='https://indef.kr'
+        tourism='https://itour.incheon.go.kr/ssst/ssst/detail.do?cotId=APD21112609185307508'
+        if source not in excluded and b.canonical(tourism) not in excluded:
+            raw,_,_=b.public_read(source)
+            page=b.SourceHTML();page.feed(raw.decode('utf-8',errors='replace'))
+            visible=re.sub(r'\s+','',' '.join(page.parts))
+            if not all(fact in visible for fact in ('2026.11.20.','11.22.','인천문화예술회관')):
+                raise b.Stop('First Friday official event schedule changed.')
+            raw,_,_=b.public_read(tourism)
+            page=b.SourceHTML();page.feed(raw.decode('utf-8',errors='replace'))
+            visible=re.sub(r'\s+','',' '.join(page.parts))
+            if not all(fact in visible for fact in ('2026.11.20','2026.11.22','10:00~17:00','무료')):
+                raise b.Stop('First Friday official visitor information changed.')
+            item=dict.fromkeys(b.ITEM_FIELDS,'')
+            item.update(title='인천국제디자인페어, 지역 디자인 작업 살펴보기',publisher='인천국제디자인페어',
+                source_url=source,source_date='2026-11-19',date_kind='확인',language='한국어',region='domestic',
+                summary='디자인기업의 포트폴리오와 국내외 디자이너 작품을 함께 살펴볼 수 있는 전시입니다.',
+                point='디자인기업관·국제교류전·예비디자이너전에서 서로 다른 작업 방식을 비교할 수 있습니다.',
+                application='브랜드·그래픽 레퍼런스를 찾는 분께 추천합니다. 인상적인 표현과 적용 아이디어를 함께 기록해 보세요.',
+                limitation='관람시간 10:00~17:00. 방문 전 공식 홈페이지에서 변경 여부를 확인하세요.',
+                evidence_quote='디자인기업의 포트폴리오와 공공디자인',event_start='2026-11-20',event_end='2026-11-22',
+                venue='인천문화예술회관',price='무료',deadline='별도 신청 마감 미공개')
+            return 'events',[b.verify_item(item,day,'events',{source},excluded)]
     region='international' if next((p for p in prior if p.get('category')!='events'),{}).get('region')=='domestic' else 'domestic'
     blocked={'helpx.adobe.com'}
     # Friday fallback gets independent research and the ordinary-article checks.
