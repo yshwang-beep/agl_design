@@ -19,7 +19,7 @@ def queue_api(path, payload):
     with urllib.request.urlopen(req, timeout=30) as res:
         token = json.load(res)['value']
     req = urllib.request.Request(BASE + path, data=json.dumps(payload, ensure_ascii=False).encode(),
-                                headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
+                                headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json', 'User-Agent': 'AGL-Design-Briefing/1.0'})
     try:
         with urllib.request.urlopen(req, timeout=60) as res:
             return json.load(res)
