@@ -20,4 +20,16 @@ class PreparationTests(unittest.TestCase):
         for day,kind in [(16,'tools'),(17,None),(18,'practice'),(19,None),(20,'events'),(21,None),(22,None)]:
             self.assertEqual(b.category_for(dt.date(2026,11,day),h),kind)
         self.assertIsNone(b.category_for(dt.date(2026,12,25),h))
+    def test_ungrounded_claims_are_rebuilt_from_original(self):
+        item={'source_url':'https://example.com/a','source_date':'2026-11-19'}
+        rebuilt={**item,'title':'Rebuilt from original'}
+        with patch.object(b,'verify_item',side_effect=[b.Stop('Original source evidence could not be confirmed.'),rebuilt]) as verify,patch.object(b,'public_read',return_value=(b'<p>Actual original evidence</p>','text/html',item['source_url'])),patch.object(b,'structure',return_value={'temporary_holiday':False,'items':[rebuilt]}) as structure:
+            result=p.verify_candidate(item,dt.date(2026,11,20),'events',{item['source_url']},set())
+            self.assertEqual(result,rebuilt)
+            self.assertIn('Actual original evidence',structure.call_args.args[0])
+            self.assertEqual(verify.call_args.args[0],rebuilt)
+    def test_rebuilt_candidate_cannot_change_source(self):
+        item={'source_url':'https://example.com/a','source_date':'2026-11-19'}
+        with patch.object(b,'verify_item',side_effect=b.Stop('Original source evidence could not be confirmed.')),patch.object(b,'public_read',return_value=(b'<p>Original</p>','text/html',item['source_url'])),patch.object(b,'structure',return_value={'temporary_holiday':False,'items':[{**item,'source_url':'https://example.com/b'}]}):
+            with self.assertRaises(b.Stop): p.verify_candidate(item,dt.date(2026,11,20),'events',{item['source_url']},set())
 if __name__=='__main__': unittest.main()
