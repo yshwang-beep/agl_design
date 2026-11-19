@@ -206,6 +206,57 @@ def usage_cost(rows, uncached=False):
     return round(total, 6)
 
 
+def collect_comparison_sources(slack, cfg, snapshot, start, end):
+    """Read complete existing task threads directly; never alter production coverage."""
+    refs = {ref for task in snapshot['activeTasks'] for ref in board.source_references(task)
+            if float(ref[1]) < end.timestamp()}
+    result, checked, skipped, evidence_no = {}, {}, 0, 0
+    # Mixed recent/older references without scanning every channel's full history.
+    ordered = sorted(refs, key=lambda ref: float(ref[1]), reverse=True)
+    ordered = ordered[:12] + sorted(ordered[12:], key=lambda ref: digest(ref))[:12]
+    for channel, stamp in ordered:
+        try:
+            if channel not in checked:
+                info = slack.call('conversations.info', {'channel': channel}).get('channel', {})
+                board.check_channel(info, channel in cfg['core_channel_ids'])
+                checked[channel] = info
+            messages = slack.pages('conversations.replies', {'channel': channel, 'ts': stamp,
+                'latest': format(end.timestamp() - .000001, '.6f'), 'inclusive': 'true'})
+            if not messages:
+                skipped += 1
+                continue
+            root = messages[0].get('thread_ts', messages[0]['ts'])
+            if root != stamp:
+                messages = slack.pages('conversations.replies', {'channel': channel, 'ts': root,
+                    'latest': format(end.timestamp() - .000001, '.6f'), 'inclusive': 'true'})
+            key = channel + ':' + root
+            if key in result:
+                result[key]['reference_aliases'] = sorted(set(result[key]['reference_aliases'] + [stamp]))
+                continue
+            safe = [m for m in messages if float(m['ts']) < end.timestamp()
+                    and float(m.get('edited', {}).get('ts', m['ts'])) < end.timestamp()
+                    and board.visible_message(m, cfg)]
+            if not any(start.timestamp() <= float(m['ts']) for m in safe):
+                continue
+            compact = []
+            for message in safe:
+                evidence_no += 1
+                compact.append({'evidence_id': 'E' + str(evidence_no), 'ts': message['ts'],
+                                'user': message.get('user', ''), 'text': message['text']})
+            source = {'channel_id': channel, 'thread_ts': root, 'messages': compact,
+                      'source_priority': 'primary' if checked[channel].get('name', '').endswith('design_lab') else 'supporting',
+                      'reference_aliases': [stamp],
+                      'current_ids': [m['evidence_id'] for m in compact if float(m['ts']) >= start.timestamp()]}
+            if len(json.dumps(source, ensure_ascii=False)) <= 20000:
+                result[key] = source
+            if len(result) >= 12:
+                break
+        except board.Stop:
+            skipped += 1
+    print('Comparison collection: complete threads=' + str(len(result)) + '; inaccessible=' + str(skipped), flush=True)
+    return result
+
+
 def comparison_sample(sources, limit=6, budget=60000):
     # Keep complete threads. Cover dated commitments, assignment lists, completion
     # and both long/short threads. Oversized threads are reported, never truncated.
@@ -252,6 +303,7 @@ def judge_comparison(sources, active, cfg, period, outputs):
             'Set uncertain=true when the evidence or output is insufficient to confidently certify zero errors.\n'
             + cfg.get('source_policy', '') + '\n' + os.environ.get('REPORT_POLICY', '') + '\n' + board.BOARD_RULES),
         'input': json.dumps({'period': period, 'sources': sources, 'baseline': board.baseline_context(active),
+                             'designers': cfg['designers'], 'collaborators': cfg.get('collaborators', []),
                              'outputs': {label: outputs[model] for label, model in labels.items()}}, ensure_ascii=False),
         'text': {'format': {'type': 'json_schema', 'name': 'comparison_quality', 'strict': True, 'schema': schema}}
     }, 'OpenAI', retry_read=True)
@@ -392,7 +444,11 @@ def execute(now=None):
         if identity.get('team_id') != cfg['team_id'] or identity.get('bot_id'):
             raise board.Stop('Unexpected collection identity.')
         reviewed_from = review_start(start, end, backfill)
-        sources, coverage = board.collect_sources(user, cfg, snapshot, reviewed_from, end)
+        if phase == 'compare':
+            sources = collect_comparison_sources(user, cfg, snapshot, reviewed_from, end)
+            coverage = {}
+        else:
+            sources, coverage = board.collect_sources(user, cfg, snapshot, reviewed_from, end)
         period = {'start': reviewed_from.date().isoformat(), 'end': end.date().isoformat()}
         if phase == 'compare':
             compare_models(sources, active, cfg, period, reviewed_from, end)
