@@ -5,6 +5,27 @@ import daily_board as daily
 
 
 class DailyTests(unittest.TestCase):
+    def test_comparison_collection_uses_whole_threads_and_read_only_methods(self):
+        from unittest.mock import MagicMock
+        end = dt.datetime(2026, 11, 19, 7, tzinfo=daily.board.KST)
+        start = end - dt.timedelta(days=14)
+        stamp = str(int((end - dt.timedelta(days=1)).timestamp())) + '.000000'
+        old = str(int((start - dt.timedelta(days=5)).timestamp())) + '.000000'
+        slack = MagicMock()
+        slack.call.return_value = {'channel': {'id': 'CTEST', 'name': 'design_lab'}}
+        slack.pages.return_value = [{'ts': old, 'thread_ts': old, 'text': '전체 원문'},
+                                   {'ts': stamp, 'thread_ts': old, 'text': '11/23 공유 예정'}]
+        snapshot = {'activeTasks': [{}]}
+        with patch.object(daily.board, 'source_references', return_value=[('CTEST', stamp)]), \
+             patch.object(daily.board, 'check_channel'), \
+             patch.object(daily.board, 'visible_message', return_value=True):
+            result = daily.collect_comparison_sources(slack, {'core_channel_ids': ['CTEST']}, snapshot, start, end)
+        source = result['CTEST:' + old]
+        self.assertEqual(len(source['messages']), 2)
+        self.assertEqual(source['current_ids'], ['E2'])
+        self.assertEqual(slack.pages.call_count, 2)
+        self.assertTrue(all(call.args[0] == 'conversations.replies' for call in slack.pages.call_args_list))
+
     def test_model_requests_set_reasoning_only_for_reasoning_models(self):
         response = {'status': 'completed', 'output': [{'content': [{'type': 'output_text', 'text': '{"items":[]}'}]}]}
         for model, effort in [('gpt-4.1', None), ('gpt-6.2-sol', 'low'), ('gpt-6.2-astra', 'medium')]:
@@ -69,7 +90,7 @@ class DailyTests(unittest.TestCase):
              patch.object(daily.board, 'config_from_env', return_value=cfg), \
              patch.object(daily, 'DailyAPI', return_value=api) as factory, \
              patch.object(daily.board, 'Slack', side_effect=[bot, user]), \
-             patch.object(daily.board, 'collect_sources', return_value=({}, {})), \
+             patch.object(daily, 'collect_comparison_sources', return_value={}), \
              patch.object(daily, 'compare_models') as compare:
             daily.execute(now)
         self.assertFalse(factory.call_args.args[2])
