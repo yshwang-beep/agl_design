@@ -51,7 +51,7 @@ def api(method, params=None, write=False):
             with urllib.request.build_opener(NoRedirect()).open(request, timeout=60) as response:
                 result = json.load(response)
             if not result.get('ok'):
-                raise RuntimeError('Slack operation rejected.')
+                raise RuntimeError('Slack operation rejected: ' + (result.get('error') if result.get('error') in {'missing_scope','not_in_channel','channel_not_found','invalid_auth','token_revoked','account_inactive','ratelimited','restricted_action'} else 'request_rejected'))
             return result
         except urllib.error.HTTPError as error:
             if not write and error.code == 429 and attempt < 3:
@@ -68,9 +68,10 @@ def run(now=None):
     identity = api('auth.test')
     if identity.get('team_id') != cfg['team_id'] or identity.get('user_id') != cfg['bot_user_id']:
         raise RuntimeError('Unexpected bot identity.')
-    channel = api('conversations.info', {'channel': CHANNEL}).get('channel', {})
-    if CHANNEL not in cfg['core_channel_ids'] or not channel.get('is_channel') or channel.get('is_archived') or channel.get('is_ext_shared'):
+    if CHANNEL not in cfg['core_channel_ids']:
         raise RuntimeError('Unexpected reminder destination.')
+    # Use the existing bot channel-history scope; no new channel-info permission.
+    api('conversations.history', {'channel': CHANNEL, 'limit': 1})
     if os.environ.get('GITHUB_EVENT_NAME') != 'schedule':
         print('PASS: Reminder preflight verified; no Slack message sent.')
         return
@@ -120,6 +121,7 @@ def self_test():
 if __name__ == '__main__':
     try:
         self_test() if '--self-test' in sys.argv else run()
-    except Exception:
-        print('STOP: Dashboard reminder failed; no private details logged. Verify delivery before retrying.', file=sys.stderr)
+    except Exception as error:
+        message = str(error) if isinstance(error, RuntimeError) else 'Dashboard reminder failed; no private details logged.'
+        print('STOP: ' + message + ' Verify delivery before retrying.', file=sys.stderr)
         sys.exit(1)
