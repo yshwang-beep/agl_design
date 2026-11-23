@@ -424,7 +424,7 @@ def execute(now=None):
             ensure_window(now, date)
         existing = api.call('status')
         if publish and existing.get('status') == 'committed':
-            if not backfill and date.weekday() == 0 and dt.datetime.now(board.KST).time() < dt.time(8, 58):
+            if os.environ.get('BOARD_MONDAY_NOTICE_ENABLED', 'true') == 'true' and not backfill and date.weekday() == 0 and dt.datetime.now(board.KST).time() < dt.time(8, 58):
                 board.schedule_notice(api, bot, cfg, existing, date, dt.datetime.now(board.KST))
             print('PASS: Existing daily record reused: ' + date_string, flush=True)
             continue
@@ -474,7 +474,7 @@ def execute(now=None):
             raise board.Stop('Daily record readback failed.')
         if not backfill and not note and analyzed:
             save_analysis_receipts(api, analyzed, cfg, end, result['revision'])
-        if not backfill and date.weekday() == 0 and dt.datetime.now(board.KST).time() < dt.time(8, 58):
+        if os.environ.get('BOARD_MONDAY_NOTICE_ENABLED', 'true') == 'true' and not backfill and date.weekday() == 0 and dt.datetime.now(board.KST).time() < dt.time(8, 58):
             board.schedule_notice(api, bot, cfg, verified, date, dt.datetime.now(board.KST), review_note=note)
         print('PASS: Daily record saved and verified: ' + date_string + '; rows=' + str(verified['rowCount']), flush=True)
 
