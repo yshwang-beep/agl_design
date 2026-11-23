@@ -1,0 +1,25 @@
+name: Monday dashboard check reminder
+on:
+  schedule:
+    - cron: '5 0 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: monday-dashboard-check-reminder
+  cancel-in-progress: false
+jobs:
+  reminder:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Verify reminder format and safe manual mode
+        run: python3 dashboard_reminder.py --self-test
+      - name: Post the Monday dashboard check reminder
+        env:
+          BOARD_CONFIG: ${{ secrets.BOARD_CONFIG }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: python3 dashboard_reminder.py

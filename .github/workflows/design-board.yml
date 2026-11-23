@@ -44,6 +44,7 @@ jobs:
           WORKBOARD_URL: ${{ vars.WORKBOARD_URL }}
           BOARD_CONFIG: ${{ secrets.BOARD_CONFIG }}
           BOARD_NOTICE_CHANNEL_ID: 'C0AM4AC7WA3'
+          BOARD_MONDAY_NOTICE_ENABLED: 'false'
           SLACK_USER_TOKEN: ${{ secrets.SLACK_USER_TOKEN }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_GROUP_MENTION: '<!subteam^S09FW5GBM7G>'
